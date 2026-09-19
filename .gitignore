@@ -1,0 +1,29 @@
+# 虚拟环境与构建缓存
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 运行期数据：SQLite 里可能存有 Web 界面录入的 API key，绝不能入库
+llm_gw.sqlite3
+llm_gw.sqlite3-*
+*.sqlite3
+*.sqlite3-*
+
+# 密钥：.env 保存 OPENAI_API_KEY / DEEPSEEK_API_KEY / ANTHROPIC_API_KEY 等
+.env
+.env.*
+
+# 前端
+node_modules/
+webapp/dist/
+
+# 工具与系统
+.trae/
+.DS_Store
+
+# 外部参考项目（独立 git 仓库，不属于本仓库）
+pi/
