@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import App from "../App.jsx";
+import { TaskWaterfall, bar_geometry, group_by_task } from "../pages/TracePage.jsx";
 import { streamChat } from "../api.js";
 
 describe("控制台冒烟", () => {
@@ -15,6 +16,77 @@ describe("控制台冒烟", () => {
     const html = renderToStaticMarkup(<App />);
     expect(html).toContain("模型清单");
     expect(html).toContain("高级配置");
+  });
+});
+
+describe("Trace 任务瀑布图", () => {
+  const rows = [
+    {
+      call_id: "c1",
+      trace_id: "t1",
+      run_id: "task-a",
+      ts: 200,
+      model: "gpt-a",
+      terminal: "done",
+      total_ms: 100,
+      ttft_ms: 20,
+      cost: { total: 0.001 },
+    },
+    {
+      call_id: "c2",
+      trace_id: "t2",
+      run_id: "task-a",
+      ts: 100,
+      model: "gpt-b",
+      terminal: "error",
+      total_ms: 400,
+      ttft_ms: 0,
+      cost: { total: 0.002 },
+    },
+    {
+      call_id: "c3",
+      trace_id: "t3",
+      run_id: "",
+      ts: 300,
+      model: "gpt-c",
+      terminal: "cancelled",
+      total_ms: 200,
+      ttft_ms: 50,
+      cost: { total: 0 },
+    },
+  ];
+
+  it("按 run_id 分组，空 run_id 归入未标记任务，组内按时间正序", () => {
+    const groups = group_by_task(rows);
+    expect(groups.map((g) => g.run_id)).toEqual(["task-a", ""]);
+    // c2(ts=100) 应排在 c1(ts=200) 之前，且不改变入参顺序
+    expect(groups[0].calls.map((c) => c.call_id)).toEqual(["c2", "c1"]);
+    expect(rows.map((r) => r.call_id)).toEqual(["c1", "c2", "c3"]);
+  });
+
+  it("条宽相对全局最长调用，TTFT 为条内占比", () => {
+    // 全局最长 400ms：100ms → 25%，400ms → 100%
+    expect(bar_geometry({ total_ms: 100, ttft_ms: 20 }, 400)).toEqual({ width: 25, ttftShare: 20 });
+    expect(bar_geometry({ total_ms: 400, ttft_ms: 0 }, 400)).toEqual({ width: 100, ttftShare: 0 });
+    // total 为 0 时给最小可见宽度，且不做除零
+    expect(bar_geometry({ total_ms: 0, ttft_ms: 0 }, 400)).toEqual({ width: 2, ttftShare: 0 });
+  });
+
+  it("渲染任务分组、汇总与终态配色", () => {
+    const html = renderToStaticMarkup(
+      <TaskWaterfall rows={rows} selected="t1" onSelect={() => {}} />
+    );
+    expect(html).toContain("task-a");
+    expect(html).toContain("未标记任务");
+    // 任务级汇总：2 次调用 / 合计 500.0 ms / 1 个错误
+    expect(html).toContain("2 次调用");
+    expect(html).toContain("500.0 ms");
+    expect(html).toContain("错误 1");
+    // 终态配色与选中态
+    expect(html).toContain("waterfall-bar waterfall-ok");
+    expect(html).toContain("waterfall-bar waterfall-bad");
+    expect(html).toContain("waterfall-bar waterfall-warn");
+    expect(html).toContain("row-selected");
   });
 });
 

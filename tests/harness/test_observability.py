@@ -98,6 +98,7 @@ async def test_save_call_persists_all_eight_dimensions(storage):
     # 弹性
     assert flat["attempt"] == 1
     assert flat["fallback"] is False
+    assert flat["disposition"] == ""
     # 结果
     assert flat["terminal"] == "done"
     assert flat["finish_reason"] == "stop"

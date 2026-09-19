@@ -1,6 +1,7 @@
 """有界退避重试。
 
-移植 pi 的 ``retry.ts`` / ``provider-retry.ts``，并落实需求第 88 行的重试决策表：
+移植 pi 的 ``retry.ts`` / ``provider-retry.ts``，并落实需求 Harness 层第 91-104 行
+的重试决策表：
 
 - **有界**：``max_retries`` 上限，初始调用不计入重试次数。
 - **指数退避**：``base_delay_ms × 2^(attempt-1)``，封顶 ``max_delay_ms``，±25% 抖动
@@ -180,6 +181,7 @@ async def retry_assistant_call(
     *,
     callbacks: RetryCallbacks | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    is_retryable: Callable[[AssistantMessage], bool] | None = None,
 ) -> AssistantMessage:
     """执行一次"产出助手消息"的调用，对瞬时错误做有界重试。
 
@@ -187,7 +189,12 @@ async def retry_assistant_call(
     - 不可重试的错误（配额、账单、认证）：立即返回，让确定性失败快速失败。
     - 其余错误：最多重试 ``max_retries`` 次，指数退避。
     - 退避期间被取消：归一为 ``aborted`` 消息，调用方无需关心取消发生在哪一步。
+
+    ``is_retryable`` 允许调用方注入判定谓词。默认走 :func:`is_retryable_assistant_error`
+    的正则分类；路由层会注入基于处置决策表（``should_auto_retry``）的谓词，让决策表
+    成为"能不能重试"的唯一真源，避免正则与决策表各判一次导致漂移。
     """
+    retryable_fn = is_retryable or is_retryable_assistant_error
     max_attempts = policy.max_attempts() if policy is not None else 0
     attempt = 0
     last_retry: int | None = None
@@ -205,7 +212,7 @@ async def retry_assistant_call(
                 await _notify(callbacks.on_retry_finished if callbacks else None, True, last_retry, None)
             return response
 
-        if attempt >= max_attempts or not is_retryable_assistant_error(response):
+        if attempt >= max_attempts or not retryable_fn(response):
             if last_retry is not None:
                 await _notify(
                     callbacks.on_retry_finished if callbacks else None,

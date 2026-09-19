@@ -147,20 +147,40 @@ guard.snapshot()                # {"request_id": ..., "first_delta_sent": True, 
 
 `Router.stream()` 干脆**不做跨模型降级**：一旦开始吐字再换模型重来会产出重复内容。降级决策只存在于非流式的 `Router.execute()`。
 
-## 7. 降级（fallback）
+## 7. 降级（degrade）
 
-`Router.execute()` 在主路由重试后仍失败、**且错误是瞬时的**时候降级到备用模型：
+`Router.execute()` 遍历 `[主路由] + [备用路由]`，按错误码的**处置决策**决定下一步：
 
 ```python
-if message.stop_reason == "error" and is_retryable_assistant_error(message):
-    if decision.backup is not None:
-        on_fallback(decision.primary, decision.backup, message.error_message or "")
-        message = await self._attempt(decision.backup, task)
+for index, model in enumerate(models):
+    message = await self._attempt(model, task, decision.profile, trace)
+    if message.stop_reason != "error":
+        return message
+
+    error_decision = decision_for(_code_from(message))
+    if error_decision.disposition is ErrorDisposition.FAIL:
+        return message                      # 报错：确定性失败，换模型也不会变好
+
+    if index + 1 < len(models):
+        trace.fallback = True               # 降级：换路由表中下一个模型
+        trace.warnings.append(f"{code}: 已降级 ...；{error_decision.strategy}")
+        continue
+    return message                          # 没有下一个模型，只能返回错误
 ```
 
-只对瞬时失败降级：认证失败 / 配额耗尽 / 内容拒答换模型也不会变好，降级只是浪费配额，还会把"密钥配错了"这个真问题掩盖成"两个模型都失败了"。
+三种处置的差别：
 
-降级通过 `on_fallback` 回调记录，落库时体现为 `CallRecord.resilience.fallback = True`。
+| 处置 | 行为 |
+|---|---|
+| `retry` | 先在**同一模型**内有限重试（`max_retries`，指数退避），耗尽后按路由换模型 |
+| `degrade` | 不重试当前模型，直接换路由表中下一个 |
+| `fail` | 立即返回错误，不做任何后续动作 |
+
+**认证失败（`AUTH_INVALID`）现在会降级**：需求「处理策略」列要求"如果路由表中还有下一个模型，就更换路由表中下一个模型，并报错，但不阻塞"。实现上"报错"体现为响应里的 `warnings` 与落库的 `disposition=degrade`，请求本身继续正常返回，不会被阻塞。
+
+**内容拒答（`CONTENT_REFUSED`）也降级**：需求要求"更换模型重试，但是每个模型最多尝试一次"。候选链只有主备两个模型、且每个模型只尝试一次，因此"每模型最多一次"天然成立。
+
+执行事实经 `ExecutionTrace` 回传，落库时体现为 `CallRecord.resilience` 的 `attempt` / `retry` / `fallback` / `disposition`，并同时写进 `requests.payload`，Trace 页的「弹性」分组可直接查看。
 
 ## 8. 配置入口
 
@@ -174,4 +194,4 @@ PUT  /api/profiles/{name}   →  同结构，写库并立即对后续请求生�
 
 task 里指定 `profile` 时用该 profile 的重试策略；未指定时用 `default` profile；一个 profile 都没配时用 router 默认策略。配置通过 `Storage` 的 `config` 表持久化，进程重启后由 `restore_config()` 恢复。
 
-此外 `advanced.max_tool_rounds` 是**请求级护栏**（不属于重试策略）：工具调用轮数超限返回 `TOOL_ROUNDS_EXCEEDED`，`RetryAction.NEVER`，在调用上游之前生效。
+此外 `advanced.max_tool_rounds` 是**请求级护栏**（不属于重试策略）：工具调用轮数超限返回 `TOOL_ROUNDS_EXCEEDED`，处置为 `fail`，在调用上游之前生效。

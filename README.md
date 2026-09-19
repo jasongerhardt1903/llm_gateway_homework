@@ -1,7 +1,7 @@
 # LLM Gateway
 
 统一的大模型网关：为后端 agent 提供一致的 LLM 接入接口，并在内部完成
-**路由、降级、重试、流式、可观测**。当前版本 **0.2.0**（见 [CHANGELOG.md](CHANGELOG.md)）。
+**路由、降级、重试、流式、可观测**。当前版本 **0.4.0**（见 [CHANGELOG.md](CHANGELOG.md)）。
 
 架构上分五层，依赖方向单向（左依赖右）：
 
@@ -14,7 +14,7 @@ LLM ← adapter ← 路由层 ← Harness 层 ← service
 - **core**：消息、任务 schema、错误模型、遥测记录、高级配置（纯数据，无 I/O）。
 - **adapter**：按协议（openai / anthropic）调用上游，SSE 解析、错误归一化。
 - **router**：`gwprofile` 定作用域 → 静态优先 → 动态筛选 → 主备。
-- **harness**：对外 HTTP + SSE，两层校验、单一终态、落库可观测。
+- **harness**：对外 HTTP + SSE，两层校验、单一终态、错误处置三选一（重试 / 降级 / 报错）、落库可观测。
 - **web / webapp**：面向人的控制台（模型定义 / Profile / Chat / Dashboard / Trace）。
 
 细节见 [docs/architecture.md](docs/architecture.md)。
@@ -120,7 +120,7 @@ cd webapp && npm run dev
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | 五层架构与 gwprofile 层 |
 | [docs/interface.md](docs/interface.md) | task schema 与 `/api/*` 契约 |
-| [docs/error-codes.md](docs/error-codes.md) | 稳定错误码与重试决策表 |
-| [docs/retry-strategy.md](docs/retry-strategy.md) | 重试、退避与 per-profile 策略 |
+| [docs/error-codes.md](docs/error-codes.md) | 稳定错误码与处置决策表（重试 / 降级 / 报错） |
+| [docs/retry-strategy.md](docs/retry-strategy.md) | 重试、退避、降级与 per-profile 策略 |
 | [docs/test-evidence.md](docs/test-evidence.md) | 测试证据存档 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本更新说明 |

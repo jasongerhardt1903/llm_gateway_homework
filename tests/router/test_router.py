@@ -10,11 +10,11 @@ from llm_gw.adapter.base import Adapter
 from llm_gw.core.errors import ErrorCode
 from llm_gw.core.messages import AssistantMessage, Capabilities, CostRates, Model
 from llm_gw.core.schema import validate_schema
-from llm_gw.harness.decisions import decision_for, should_auto_retry, should_fallback
+from llm_gw.harness.decisions import decision_for, should_auto_retry, should_degrade
 from llm_gw.harness.retry import RetryPolicy
 from llm_gw.router.profile import GwProfile, ProfileModelRef
 from llm_gw.router.registry import CapabilityRegistry
-from llm_gw.router.router import Router
+from llm_gw.router.router import ExecutionTrace, Router
 from llm_gw.router.rules import REJECT_CAPABILITY, REJECT_UNAVAILABLE, route
 from llm_gw.util.clock import FakeClock
 
@@ -53,13 +53,14 @@ def _registry(*models: Model) -> CapabilityRegistry:
     return registry
 
 
-def _static_profile(name: str, order: list[str]) -> GwProfile:
+def _static_profile(name: str, order: list[str], *, max_retries: int = 3) -> GwProfile:
     """按显式优先顺序造一个静态 profile。"""
     return GwProfile(
         name=name,
         models=[ProfileModelRef(label) for label in order],
         route_mode="static",
         static_order=list(order),
+        max_retries=max_retries,
     )
 
 
@@ -214,22 +215,24 @@ def test_no_candidate_marks_decision_not_ok():
 
 
 def test_decision_table_matches_requirement():
-    assert decision_for(ErrorCode.AUTH_INVALID).value == "never"
-    assert decision_for(ErrorCode.REQUEST_INVALID).value == "never"
-    assert decision_for(ErrorCode.CONTENT_REFUSED).value == "no_bypass"
-    assert decision_for(ErrorCode.STREAM_INTERRUPTED_AFTER_DATA).value == "no_blind_regenerate"
-    assert decision_for(ErrorCode.OUTPUT_SCHEMA_INVALID).value == "limited_repair"
+    """处置三选一：degrade / fail / retry，逐一对应需求「处理策略」列。"""
+    assert decision_for(ErrorCode.AUTH_INVALID).disposition.value == "degrade"
+    assert decision_for(ErrorCode.REQUEST_INVALID).disposition.value == "fail"
+    assert decision_for(ErrorCode.CONTENT_REFUSED).disposition.value == "degrade"
+    assert decision_for(ErrorCode.STREAM_INTERRUPTED_AFTER_DATA).disposition.value == "fail"
+    assert decision_for(ErrorCode.OUTPUT_SCHEMA_INVALID).disposition.value == "degrade"
+    assert decision_for(ErrorCode.CONN_FAILED).disposition.value == "retry"
 
 
-def test_auto_retry_and_fallback_flags():
+def test_auto_retry_and_degrade_flags():
     assert should_auto_retry(ErrorCode.CONN_FAILED)
     assert should_auto_retry(ErrorCode.RATE_LIMITED)
     assert not should_auto_retry(ErrorCode.AUTH_INVALID)
     assert not should_auto_retry(ErrorCode.CONTENT_REFUSED)
 
-    assert should_fallback(ErrorCode.UPSTREAM_OVERLOADED)
-    assert should_fallback(ErrorCode.QUEUE_REJECTED)
-    assert not should_fallback(ErrorCode.AUTH_INVALID)
+    assert should_degrade(ErrorCode.AUTH_INVALID)
+    assert should_degrade(ErrorCode.CONTENT_REFUSED)
+    assert not should_degrade(ErrorCode.REQUEST_INVALID)
 
 
 # --------------------------------------------------------------------------
@@ -290,39 +293,111 @@ async def test_execute_falls_back_to_backup_on_transient_error():
     a, b = _model("a"), _model("b")
     registry = _registry(a, b)
     registry.set_profile(_static_profile("smart", ["openai/a", "openai/b"]))
-    transient = AssistantMessage(stop_reason="error", error_message="503 overloaded")
+    transient = AssistantMessage(stop_reason="error", error_message="UPSTREAM_OVERLOADED: 503 overloaded")
     adapters = {
         # profile 默认允许重试 3 次，因此主模型要一直失败才会走到降级。
         "openai/a": _FakeAdapter([transient] * 4),
         "openai/b": _FakeAdapter([AssistantMessage()]),
     }
-    fallbacks: list[tuple[str, str, str]] = []
+    trace = ExecutionTrace()
 
-    message = await _router_with(registry, adapters).execute(
-        _task(profile="smart"),
-        on_fallback=lambda src, dst, err: fallbacks.append((src.label(), dst.label(), err)),
-    )
+    message = await _router_with(registry, adapters).execute(_task(profile="smart"), trace=trace)
 
     assert message.stop_reason == "pending"
     assert adapters["openai/a"].calls == ["openai/a"] * 4
     assert adapters["openai/b"].calls == ["openai/b"]
-    assert fallbacks == [("openai/a", "openai/b", "503 overloaded")]
+    assert trace.fallback is True
+    assert (trace.degraded_from, trace.degraded_to) == ("openai/a", "openai/b")
+    assert trace.attempts == 5
+    assert trace.retries == 3
 
 
-async def test_execute_does_not_fallback_on_non_retryable_error():
-    """认证失败换模型也不会变好，降级只是浪费。"""
+async def test_execute_degrades_on_auth_failure_with_warning():
+    """认证失败按需求换成路由表中下一个模型，并告警但不阻塞。"""
     a, b = _model("a"), _model("b")
     registry = _registry(a, b)
     registry.set_profile(_static_profile("smart", ["openai/a", "openai/b"]))
     adapters = {
-        "openai/a": _FakeAdapter([AssistantMessage(stop_reason="error", error_message="insufficient_quota")]),
+        "openai/a": _FakeAdapter(
+            [AssistantMessage(stop_reason="error", error_message="AUTH_INVALID: bad key")]
+        ),
         "openai/b": _FakeAdapter([AssistantMessage()]),
     }
+    trace = ExecutionTrace()
 
-    message = await _router_with(registry, adapters).execute(_task(profile="smart"))
+    message = await _router_with(registry, adapters).execute(_task(profile="smart"), trace=trace)
+
+    assert message.stop_reason == "pending"
+    assert adapters["openai/a"].calls == ["openai/a"]
+    assert adapters["openai/b"].calls == ["openai/b"]
+    assert trace.fallback is True
+    assert trace.disposition == "degrade"
+    assert any("AUTH_INVALID" in warning for warning in trace.warnings)
+
+
+async def test_execute_degrades_on_content_refusal_once_per_model():
+    """内容拒答：换模型重试，但每个模型最多尝试一次。"""
+    a, b = _model("a"), _model("b")
+    registry = _registry(a, b)
+    registry.set_profile(_static_profile("smart", ["openai/a", "openai/b"]))
+    adapters = {
+        "openai/a": _FakeAdapter(
+            [AssistantMessage(stop_reason="error", error_message="CONTENT_REFUSED: blocked")]
+        ),
+        "openai/b": _FakeAdapter([AssistantMessage()]),
+    }
+    trace = ExecutionTrace()
+
+    message = await _router_with(registry, adapters).execute(_task(profile="smart"), trace=trace)
+
+    assert message.stop_reason == "pending"
+    assert adapters["openai/a"].calls == ["openai/a"]
+    assert adapters["openai/b"].calls == ["openai/b"]
+    assert trace.retries == 0
+    assert trace.disposition == "degrade"
+
+
+async def test_execute_does_not_degrade_on_request_invalid():
+    """请求非法是确定性失败，换模型也不会变好，直接报错。"""
+    a, b = _model("a"), _model("b")
+    registry = _registry(a, b)
+    registry.set_profile(_static_profile("smart", ["openai/a", "openai/b"]))
+    adapters = {
+        "openai/a": _FakeAdapter(
+            [AssistantMessage(stop_reason="error", error_message="REQUEST_INVALID: bad schema")]
+        ),
+        "openai/b": _FakeAdapter([AssistantMessage()]),
+    }
+    trace = ExecutionTrace()
+
+    message = await _router_with(registry, adapters).execute(_task(profile="smart"), trace=trace)
 
     assert message.stop_reason == "error"
     assert adapters["openai/b"].calls == []
+    assert trace.fallback is False
+    assert trace.disposition == "fail"
+
+
+async def test_execute_retries_then_degrades_after_max_retries():
+    """有限重试耗尽后，按路由更换模型再试（需求「处理策略」列）。"""
+    a, b = _model("a"), _model("b")
+    registry = _registry(a, b)
+    registry.set_profile(_static_profile("smart", ["openai/a", "openai/b"], max_retries=1))
+    transient = AssistantMessage(stop_reason="error", error_message="CONN_FAILED: reset by peer")
+    adapters = {
+        "openai/a": _FakeAdapter([transient] * 2),
+        "openai/b": _FakeAdapter([AssistantMessage()]),
+    }
+    trace = ExecutionTrace()
+
+    message = await _router_with(registry, adapters).execute(_task(profile="smart"), trace=trace)
+
+    assert message.stop_reason == "pending"
+    assert adapters["openai/a"].calls == ["openai/a"] * 2
+    assert adapters["openai/b"].calls == ["openai/b"]
+    assert trace.attempts == 3
+    assert trace.retries == 1
+    assert trace.fallback is True
 
 
 async def test_execute_returns_route_error_when_no_candidate():

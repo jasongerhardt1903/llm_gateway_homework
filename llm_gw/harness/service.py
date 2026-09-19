@@ -11,7 +11,11 @@
 3. **可观测**：每次调用（含流式）都落一条 :class:`CallRecord`，TTFT 以
    **第一个有业务意义的 delta** 为准，不把 ``start`` 事件算作首 token。
 
-版本：0.2.0
+非流式调用还会把执行层的处置事实（重试次数、是否降级、最终处置、告警）写进
+``CallRecord.resilience`` 并在响应里回传 ``warnings``——需求要求"妥善记录"
+重试 / 降级 / 报错三选一的结果。
+
+版本：0.3.0
 """
 
 from __future__ import annotations
@@ -31,9 +35,9 @@ from ..core.errors import ErrorCode
 from ..core.events import AssistantEvent
 from ..core.messages import AssistantMessage
 from ..core.schema import SchemaViolation, SyntaxViolation, Task, validate_schema, validate_syntax
-from ..core.telemetry import CallRecord, LatencyBreakdown, PromptInfo
+from ..core.telemetry import CallRecord, LatencyBreakdown, PromptInfo, ResilienceInfo
 from ..harness.sse import encode_sse
-from ..router.router import Router
+from ..router.router import ExecutionTrace, Router
 from ..util.clock import Clock, RealClock
 from .query import Query
 from .storage import Storage
@@ -59,13 +63,21 @@ class GatewayService:
         self.storage = storage
         self.clock: Clock = clock or RealClock()
         self.query = Query(storage) if storage is not None else None
+        #: 最近一次非流式调用产生的告警（如"认证失败已换模型，未阻塞"）。
+        #: 挂在服务上而不是扩展 ``AssistantMessage``——后者是 adapter 共享的传输
+        #: 模型，加字段会牵动所有供应商的序列化。
+        self.last_warnings: list[str] = []
 
     # -- 非流式 ------------------------------------------------------------
 
     async def complete(self, task: Task, *, trace_id: str | None = None) -> AssistantMessage:
         started = self.clock.now()
         decision = self.router.route(task)
-        message = await self.router.execute(task)
+        # 执行层的处置事实（重试次数 / 是否降级 / 最终处置 / 告警）经由 trace 回传，
+        # 否则落库的 attempt/retry/fallback 恒为默认值，"妥善记录"就是空话。
+        trace = ExecutionTrace()
+        message = await self.router.execute(task, trace=trace)
+        self.last_warnings = list(trace.warnings)
         await self._record(
             task=task,
             decision=decision,
@@ -74,6 +86,7 @@ class GatewayService:
             first_delta_at=None,
             chunk_count=0,
             trace_id=trace_id,
+            trace=trace,
         )
         return message
 
@@ -124,6 +137,7 @@ class GatewayService:
         first_delta_at: float | None,
         chunk_count: int,
         trace_id: str | None,
+        trace: ExecutionTrace | None = None,
     ) -> None:
         if self.storage is None:
             return
@@ -150,6 +164,14 @@ class GatewayService:
                 ttft_ms=(first_delta_at - started) * 1000.0 if first_delta_at is not None else 0.0,
                 generation_ms=(ended - first_delta_at) * 1000.0 if first_delta_at is not None else 0.0,
                 total_ms=(ended - started) * 1000.0,
+            ),
+            # 弹性维度真实落库：重试次数、是否降级、最终处置。流式不跨模型降级，
+            # 因此 stream_sse 调用 _record 时 trace 为 None，保持默认 1/0/0。
+            resilience=ResilienceInfo(
+                attempt=trace.attempts if trace else 1,
+                retry=trace.retries if trace else 0,
+                fallback=trace.fallback if trace else False,
+                disposition=trace.disposition if trace else "",
             ),
             finish_reason=message.raw_stop_reason or message.stop_reason,
             terminal=message.terminal_state(),
@@ -246,7 +268,7 @@ def create_app(service: GatewayService) -> FastAPI:
 
     服务实例由调用方注入，便于测试直接塞入带 mock transport 的 Router。
     """
-    app = FastAPI(title="LLM Gateway", version="0.1.0")
+    app = FastAPI(title="LLM Gateway", version="0.4.0")
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -263,6 +285,8 @@ def create_app(service: GatewayService) -> FastAPI:
                 "terminal": message.terminal_state(),
                 "text": message.text(),
                 "error_message": message.error_message,
+                # 不阻塞但需知会的告警，例如"认证失败已换模型继续"。
+                "warnings": service.last_warnings,
                 "usage": {
                     "input": message.usage.input,
                     "output": message.usage.output,

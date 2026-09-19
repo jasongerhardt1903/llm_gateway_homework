@@ -52,6 +52,7 @@ def test_record_covers_all_required_dimensions():
     assert record.resilience.attempt == 2
     assert record.resilience.retry == 1
     assert record.resilience.fallback is False
+    assert record.resilience.disposition == ""
     # 结果
     assert record.finish_reason == "stop"
     assert record.terminal == "done"

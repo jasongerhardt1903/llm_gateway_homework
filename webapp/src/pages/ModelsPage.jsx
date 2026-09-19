@@ -96,12 +96,18 @@ export default function ModelsPage() {
                   <td>{capability_badge(model.capabilities)}</td>
                   <td>{model.api_key_set ? "已配置" : "—"}</td>
                   <td>
-                    <button type="button" onClick={() => setEditing(editing?.provider === model.provider && editing?.id === model.id ? null : model)}>
-                      {editing?.provider === model.provider && editing?.id === model.id ? "取消" : "编辑"}
-                    </button>
-                    <button type="button" className="danger" onClick={() => handleDelete(model)}>
-                      删除
-                    </button>
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="btn-ghost btn-sm"
+                        onClick={() => setEditing(editing?.provider === model.provider && editing?.id === model.id ? null : model)}
+                      >
+                        {editing?.provider === model.provider && editing?.id === model.id ? "取消" : "编辑"}
+                      </button>
+                      <button type="button" className="btn-danger btn-sm" onClick={() => handleDelete(model)}>
+                        删除
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

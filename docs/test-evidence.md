@@ -1,8 +1,13 @@
 # 测试证据
 
-> 本文件是 **v0.2.0** 的存档。相比 v0.1.0（256 例）新增 80 例：gwprofile 数据模型与解析
-> （29）、profile 作用域路由与工具轮数护栏（24）、高级配置注入请求体（14）、
-> Web profile API 与密钥脱敏（+9）、旧库迁移与密钥优先级（+4）。
+> 本文件是 **v0.4.0** 的存档。v0.4.0 为**纯前端**改动（Trace 页任务视图瀑布图），
+> 后端用例数不变（342），前端冒烟由 5 例增至 8 例（`webapp/src/__tests__/smoke.test.jsx` +3）。
+> v0.3.0 相比 v0.2.0（336 例）新增 6 例：错误处置三选一
+> 决策表与降级链（`tests/router/test_router.py` +3）、认证降级落库与非阻塞告警
+> （`tests/harness/test_service.py` +3）。v0.2.0 相比 v0.1.0（256 例）新增 80 例：
+> gwprofile 数据模型与解析（29）、profile 作用域路由与工具轮数护栏（24）、
+> 高级配置注入请求体（14）、Web profile API 与密钥脱敏（+9）、旧库迁移与
+> 密钥优先级（+4）。
 
 ## 1. 全量运行
 
@@ -13,9 +18,9 @@ $ .venv/bin/python -m pytest tests -p no:cacheprovider --cov=llm_gw --cov-report
 ```
 ........................................................................ [ 21%]
 ........................................................................ [ 42%]
-........................................................................ [ 64%]
-........................................................................ [ 85%]
-................................................                         [100%]
+........................................................................ [ 63%]
+........................................................................ [ 84%]
+......................................................                   [100%]
 ================================ tests coverage ================================
 _______________ coverage: platform darwin, python 3.13.9-final-0 _______________
 
@@ -23,7 +28,7 @@ Name                                             Stmts   Miss  Cover   Missing
 ------------------------------------------------------------------------------
 llm_gw/__init__.py                                   1      0   100%
 llm_gw/adapter/__init__.py                           0      0   100%
-llm_gw/adapter/base.py                             311     29    91%   146, 175, 178, 187, 204, 210, 212, 226, 267, 269, 271, 295, 307, 334, 359, 461, 486, 507-513, 552, 558-561
+llm_gw/adapter/base.py                             311     28    91%   146, 175, 178, 187, 204, 210, 212, 226, 267, 269, 271, 295, 307, 334, 359, 486, 507-513, 552, 558-561
 llm_gw/adapter/factory.py                           14      0   100%
 llm_gw/adapter/presets/__init__.py                   0      0   100%
 llm_gw/adapter/presets/anthropic.py                  8      0   100%
@@ -37,23 +42,23 @@ llm_gw/adapter/structured.py                       134     25    81%   55-61, 12
 llm_gw/adapter/transform.py                         80      7    91%   81, 117-121, 136
 llm_gw/core/__init__.py                              0      0   100%
 llm_gw/core/advanced.py                             35      3    91%   55, 77-78
-llm_gw/core/errors.py                              250     39    84%   146, 198-199, 219-221, 231-232, 240, 244, 248-252, 294-296, 299, 313-314, 325, 344, 348, 361, 373-374, 432, 440, 447, 449, 453, 456-457, 462-465, 499, 525
+llm_gw/core/errors.py                              251     38    85%   200, 252-253, 273-275, 285-286, 294, 298, 302-306, 348-350, 353, 367-368, 379, 398, 402, 415, 427-428, 494, 501, 503, 507, 510-511, 516-519, 553, 579
 llm_gw/core/events.py                              155      7    95%   207, 244-245, 285, 292, 302, 315
 llm_gw/core/json_utils.py                          191     14    93%   45, 141-142, 145, 184-185, 188, 197, 263-264, 267, 279, 289, 306
 llm_gw/core/messages.py                            124      2    98%   192, 194
 llm_gw/core/schema.py                              115      6    95%   111, 142, 144, 175, 214-215
-llm_gw/core/telemetry.py                            56      0   100%
+llm_gw/core/telemetry.py                            57      0   100%
 llm_gw/harness/__init__.py                           0      0   100%
-llm_gw/harness/decisions.py                         15      2    87%   50-51
+llm_gw/harness/decisions.py                         14      1    93%   53
 llm_gw/harness/query.py                             20      0   100%
-llm_gw/harness/retry.py                            127     18    86%   97-98, 103-113, 135, 144, 146, 173, 200
-llm_gw/harness/service.py                          108      6    94%   171-175, 207
+llm_gw/harness/retry.py                            128     18    86%   98-99, 104-114, 136, 145, 147, 174, 207
+llm_gw/harness/service.py                          111      6    95%   193-197, 229
 llm_gw/harness/sse.py                               80      8    90%   97-103, 126
 llm_gw/harness/storage.py                          133      7    95%   134, 161, 164, 168, 269, 334, 398
 llm_gw/router/__init__.py                            0      0   100%
 llm_gw/router/profile.py                            68      4    94%   79, 104, 140, 154
 llm_gw/router/registry.py                           60      3    95%   75, 91, 111
-llm_gw/router/router.py                             74      9    88%   71, 75-77, 98, 135-138
+llm_gw/router/router.py                            120     13    89%   106, 110-112, 136, 141-142, 166, 179, 210, 244, 248-249
 llm_gw/router/rules.py                              75      0   100%
 llm_gw/runtime.py                                   48      1    98%   105
 llm_gw/util/__init__.py                              0      0   100%
@@ -62,21 +67,21 @@ llm_gw/web/__init__.py                               0      0   100%
 llm_gw/web/api_models.py                            93      1    99%   142
 llm_gw/web/app.py                                  182     19    90%   88, 126, 129-130, 150, 161, 169, 209-210, 247, 255, 303, 305, 307, 309, 311, 313, 324, 331
 ------------------------------------------------------------------------------
-TOTAL                                             2984    248    92%
-336 passed in 1.79s
+TOTAL                                             3035    249    92%
+342 passed in 1.32s
 ```
 
-**336 passed，0 failed，92% 覆盖率。**
+**342 passed，0 failed，92% 覆盖率。**
 
-新增模块的覆盖率：`router/profile.py` 94%、`core/advanced.py` 91%、`router/rules.py` 100%、
-`web/api_models.py` 99%。
+本轮改动的模块覆盖率：`core/telemetry.py` 100%、`harness/decisions.py` 93%、
+`router/router.py` 89%、`harness/service.py` 95%、`core/errors.py` 85%。
 
 ## 2. 按文件分布
 
 | 文件 | 用例数 | 本轮变化 |
 |---|---|---|
 | `tests/adapter/test_adapter_contract.py` | 19 | |
-| `tests/adapter/test_advanced_config.py` | 14 | **新增** |
+| `tests/adapter/test_advanced_config.py` | 14 | |
 | `tests/adapter/test_streaming.py` | 22 | |
 | `tests/adapter/test_structured_output.py` | 19 | |
 | `tests/adapter/test_transform.py` | 7 | |
@@ -84,18 +89,18 @@ TOTAL                                             2984    248    92%
 | `tests/core/test_events.py` | 8 | |
 | `tests/core/test_json_utils.py` | 15 | |
 | `tests/core/test_messages.py` | 7 | |
-| `tests/core/test_schema.py` | 15 | 字段改名同步 |
-| `tests/core/test_telemetry.py` | 5 | 字段改名同步 |
-| `tests/harness/test_observability.py` | 17 | +2（旧库迁移） |
-| `tests/harness/test_service.py` | 11 | |
-| `tests/router/test_profile.py` | 29 | **新增** |
-| `tests/router/test_profile_routing.py` | 24 | **新增** |
+| `tests/core/test_schema.py` | 15 | |
+| `tests/core/test_telemetry.py` | 5 | +`disposition` 断言 |
+| `tests/harness/test_observability.py` | 17 | +`disposition` 断言 |
+| `tests/harness/test_service.py` | 14 | **+3（认证降级落库 / warnings / 成功无处置）** |
+| `tests/router/test_profile.py` | 29 | |
+| `tests/router/test_profile_routing.py` | 24 | |
 | `tests/router/test_retry.py` | 21 | |
-| `tests/router/test_router.py` | 17 | profile 作用域改造 |
-| `tests/web/test_web_api.py` | 28 | +9（profile API + 密钥） |
+| `tests/router/test_router.py` | 20 | **+3（三选一决策表与降级链）** |
+| `tests/web/test_web_api.py` | 28 | |
 | `tests/test_phase0_infra.py` | 4 | |
-| `tests/test_runtime.py` | 9 | +2（密钥优先级） |
-| **合计** | **336** | **+80** |
+| `tests/test_runtime.py` | 9 | |
+| **合计** | **342** | **+6** |
 
 ## 3. 需求要求的六类测试
 
@@ -104,11 +109,11 @@ TOTAL                                             2984    248    92%
 | 需求类别 | 文件 | 覆盖内容 | 代表用例 |
 |---|---|---|---|
 | Adapter Contract Test | `tests/adapter/test_adapter_contract.py`、`test_advanced_config.py` | 每个 adapter 的**请求翻译**与**响应翻译**，由 `httpx.MockTransport` 驱动，不依赖真实供应商 | 逐协议断言请求体字段（`response_format`、`tool_choice`、`stream_options.include_usage`）、高级配置注入（`temperature` / `top_p` / `top_k` / `thinking`）、`extra_body` 覆盖 |
-| router 测试 | `tests/router/test_router.py`、`test_profile_routing.py` | profile 作用域、能力匹配、静态顺序主备、fallback、候选拒绝原因 | `test_static_order_is_not_reordered_by_cost`、`test_static_order_skips_unknown_labels`、`test_profile_scopes_candidates`、`test_unknown_profile_fails_fast`、`test_execute_falls_back_to_backup_on_transient_error`、`test_decision_table_matches_requirement` |
+| router 测试 | `tests/router/test_router.py`、`test_profile_routing.py` | profile 作用域、能力匹配、静态顺序主备、**错误处置三选一（重试 / 降级 / 报错）**、候选拒绝原因 | `test_static_order_is_not_reordered_by_cost`、`test_profile_scopes_candidates`、`test_unknown_profile_fails_fast`、`test_decision_table_matches_requirement`、`test_execute_falls_back_to_backup_on_transient_error`（`trace.attempts == 5` / `trace.retries == 3`）、`test_execute_degrades_on_auth_failure_with_warning`、`test_execute_degrades_on_content_refusal_once_per_model`、`test_execute_does_not_degrade_on_request_invalid`、`test_execute_retries_then_degrades_after_max_retries` |
 | 重试测试 | `tests/router/test_retry.py`、`test_profile_routing.py` | 用 mocktransport 模拟超时与错误，验证重试次数与退避策略，**不真的 sleep** | `test_retries_transient_error_with_backoff`（`assert clock.sleeps == [500, 1000]`）、`test_non_retryable_error_fails_fast`（`assert clock.sleeps == []`）、`test_provider_request_respects_retry_after_header`（`assert clock.sleeps == [300]`）、per-profile 策略 |
 | streaming 测试 | `tests/adapter/test_streaming.py` | SSE 事件序列正确性：delta 顺序、usage 事件、终态、错误中断行为 | delta 顺序、usage 事件位置、`test_second_terminal_push_is_rejected`、中途错误中断 |
 | structured output 测试 | `tests/adapter/test_structured_output.py` | JSON 提取、Schema 校验、**修复尝试次数**、失败时的错误返回 | JSON 围栏剥离、修复次数上限、超限抛 `OUTPUT_SCHEMA_INVALID`、流式终校验 |
-| 可观测性 | `tests/harness/test_observability.py` | trace / Metrics / Cost Ledger 是否正确记录每次调用的关键字段 | TTFT 口径、时间窗指标、trace 链路顺序、脱敏生效、`profile` 落库、旧库迁移 |
+| 可观测性 | `tests/harness/test_observability.py`、`test_service.py` | trace / Metrics / Cost Ledger 是否正确记录每次调用的关键字段，含**处置与降级事实落库** | TTFT 口径、时间窗指标、trace 链路顺序、脱敏生效、`profile` 落库、旧库迁移、`test_auth_failure_degrades_and_records_resilience`（`attempt == 2` / `fallback == 1` / `disposition == "degrade"`）、`test_successful_call_records_no_disposition`、`test_post_task_response_carries_warnings` |
 
 额外补充（计划中未强制、但覆盖了关键不变式）：
 
@@ -116,7 +121,7 @@ TOTAL                                             2984    248    92%
 |---|---|
 | `tests/router/test_profile.py` | 逗号分隔顺序解析（含全角逗号与顿号、去重保序）、模版判定矩阵、`AdvancedConfig` 范围校验 |
 | `tests/router/test_profile_routing.py` | `TOOL_ROUNDS_EXCEEDED` 护栏（含边界值：等于上限放行、超一即拒）、模版值参与护栏判定 |
-| `tests/harness/test_service.py` | 客户端断连取消上游、流内 error 不发 `[DONE]`、已流式输出后不盲目重生成 |
+| `tests/harness/test_service.py` | 客户端断连取消上游、流内 error 不发 `[DONE]`、已流式输出后不盲目重生成、认证失败降级不阻塞且落库、`warnings` 随响应返回 |
 | `tests/core/test_events.py` | 单一终态不变式、`end` 后 push 丢弃 |
 | `tests/web/test_web_api.py` | 模型 CRUD、**密钥只写不回显 / 缺省不修改 / 空串清除**、profile CRUD 往返、Dashboard、Trace 搜索、Chat SSE 代理 |
 | `tests/test_runtime.py` | 组合根：lifespan 挂载、配置跨重启恢复、根挂载不吞 404、**密钥优先级（模型 > 环境变量）** |
@@ -132,7 +137,7 @@ async def test_retries_transient_error_with_backoff(clock):
     assert clock.sleeps == [500, 1000]
 ```
 
-整个 `tests/router/test_retry.py`（21 个用例，含"重试 3 次""退避封顶""退避期间取消"）与全量 336 个用例一起在 **1.79 秒**内跑完——若存在真实退避等待，仅退避序列 `500+1000+2000` 就会超过 3.5 秒。
+整个 `tests/router/test_retry.py`（21 个用例，含"重试 3 次""退避封顶""退避期间取消"）与全量 342 个用例一起在 **1.32 秒**内跑完——若存在真实退避等待，仅退避序列 `500+1000+2000` 就会超过 3.5 秒。
 
 窗口类指标同理：`Storage(now=...)` 的时间来自注入函数，`tests/harness/test_observability.py` 用 `now.value - 120` 精确构造"2 分钟前的记录"，不依赖 `time.sleep`。
 
@@ -145,23 +150,27 @@ $ cd webapp && npm test
 ```
  RUN  v2.1.9 webapp
 
- ✓ src/__tests__/smoke.test.jsx (5 tests) 7ms
+ ✓ src/__tests__/smoke.test.jsx (8 tests) 8ms
 
  Test Files  1 passed (1)
-      Tests  5 passed (5)
+      Tests  8 passed (8)
 ```
 
-覆盖：五个页签渲染（含新增 Profile 页）、默认页、SSE 事件解析（含**事件被拆到两个网络分片**的场景）、`[DONE]` 不作为业务事件透出、`error` 终态仍交付、HTTP 错误抛出后端 `detail`。
+覆盖：五个页签渲染（含 Profile 页）、默认页、SSE 事件解析（含**事件被拆到两个网络分片**的场景）、`[DONE]` 不作为业务事件透出、`error` 终态仍交付、HTTP 错误抛出后端 `detail`；以及 v0.4.0 新增的任务瀑布图三例——按 `run_id` 分组（空值归入「未标记任务」、组内时间正序且不改动入参）、条宽相对全局最长调用与 TTFT 占比（含 `total_ms=0` 的最小宽度与除零保护）、分组渲染的汇总文案与终态配色。
 
 构建产物同样验证过：
 
 ```bash
 $ cd webapp && npm run build
-dist/assets/index-vVIoStGo.js   167.44 kB │ gzip: 53.40 kB
-✓ built in 274ms
+dist/index.html                   0.40 kB │ gzip:  0.29 kB
+dist/assets/index-D0KxleHe.css   10.65 kB │ gzip:  2.81 kB
+dist/assets/index-BfyNuMZB.js   169.85 kB │ gzip: 54.08 kB
+✓ built in 276ms
 ```
 
 ## 6. 端到端验证（真实进程）
+
+### 6.1 v0.2.0 存档
 
 用 `LLM_GW_DB=/tmp/gw_e2e_v3.sqlite3` 起真实服务（端口 8012），逐项验证：
 
@@ -184,7 +193,32 @@ dist/assets/index-vVIoStGo.js   167.44 kB │ gzip: 53.40 kB
 | 错误终态不发 `[DONE]` | 对 SSE 响应 `grep -c DONE` | `0` |
 | 服务端无异常 | `grep -ic traceback` | `0` |
 
-### 6.1 旧库迁移（v0.1.0 的库 → v0.2.0）
+### 6.2 v0.3.0 新增验证：错误处置三选一
+
+起两个进程：一个**假上游**（`/tmp/gw_stub_upstream.py`，OpenAI 兼容的最小实现，
+密钥含 `good-key` 返回 200、否则返回 401），一个真实网关
+（`LLM_GW_DB=/tmp/gw_e2e_v3.sqlite3`，端口 8037）。
+
+注册两个模型都指向假上游，只有密钥不同；建静态 profile
+`static_order = [openai/stub-bad, openai/stub-good]`。这样"主模型认证失败"是
+**确定性**的，不依赖真实供应商。
+
+| 验证项 | 命令 | 结果 |
+|---|---|---|
+| 认证失败**不阻塞** | `POST /api/chat`（`profile=degrade-demo`） | `terminal=done`、`stop_reason=stop`，`text` 为**备用模型**的回答 |
+| **降级事实落库** | `GET /api/traces?limit=5` | `attempt=2`、`retry=0`、`fallback=1`、`disposition='degrade'`、`model='stub-bad'` |
+| **非阻塞告警随响应返回** | `POST /v1/tasks`（同一 profile） | `stop_reason=stop`、`terminal=done`，`warnings` 含 `"AUTH_INVALID: 已降级 openai/stub-bad → openai/stub-good；更换路由表中下一个模型并告警，不阻塞；没有下一个模型则返回错误。"` |
+| **请求验证不降级** | `POST /api/chat`（`messages` 类型非法） | `422`；`/api/tasks:validate` 返回 `{"code":"REQUEST_INVALID", ...}` |
+| 无多余降级记录 | 库中 `SELECT COUNT(*) FROM requests` | 仍为 `1`——非法请求在进入路由前即被拒绝，未产生任何 `fallback` 记录 |
+| 成功调用无处置 | 该次成功记录的 `disposition` | 落库的降级记录 `disposition='degrade'`；`tests/harness/test_service.py` 另断言成功完成时为 `""` |
+
+> `/v1/tasks`（agent API）在 `llm_gw.runtime.create_runtime_app` 里**未挂载**——运行时只把
+> 控制台挂在 `/`，因此真实进程里访问不到 `/v1/tasks`。上面的 `warnings` 验证用了一个
+> 临时入口（`/tmp/gw_e2e_runtime.py`），复制同一套装配并额外挂上 `harness.service.create_app`，
+> 复用同一份数据库与同一批模型/profile 配置。`/v1/tasks` 本身在
+> `tests/harness/test_service.py` 里由 `ASGITransport` 覆盖。
+
+### 6.3 旧库迁移（v0.1.0 的库 → v0.2.0）
 
 用 v0.1.0 的 `requests` 表结构（路由维度列名 `logical_model`，payload 里也是该键）生成
 `/tmp/gw_legacy3.sqlite3`，再用 v0.2.0 启动：
@@ -201,6 +235,13 @@ dist/assets/index-vVIoStGo.js   167.44 kB │ gzip: 53.40 kB
 > 因此 v0.1.0 期间产生的旧记录在 Trace 页里 Profile 一栏显示为空（payload 里仍是
 > `logical_model`），不影响查询与展示其余字段。
 
+> 已知局限（v0.3.0 期间发现，**未在本次修复**）：模型的 `api_key` 只存在于内存注册表，
+> 不随 `config` 表持久化——`web/app.py` 的 `_persist_models` 用的是
+> `model_to_payload(model)`，而该函数刻意把 `api_key` 置为 `None`（"只写不回显"），
+> 于是密钥写库时也一并被抹掉，进程重启后模型密钥为空、回退到环境变量。
+> 这与 CHANGELOG / README 里"密钥写入 SQLite"的表述不符，属于 v0.2.0 遗留缺陷，
+> 与本次错误处置改造无关，因此只记录不改动。
+
 ## 7. 复现方式
 
 ```bash
@@ -215,4 +256,4 @@ cd webapp && npm install && npm test
 .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
 ```
 
-所有 adapter 测试由 `httpx.MockTransport` 驱动，重试测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 336 个用例。仅第 6 节的端到端验证会真的访问上游（因此那里预期收到 `AUTH_INVALID`）。
+所有 adapter 测试由 `httpx.MockTransport` 驱动，重试测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 342 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥）。

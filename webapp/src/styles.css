@@ -1,13 +1,67 @@
+/* ============================================================================
+   LLM Gateway 控制台 · 深色主题样式（纯手写，无框架依赖）
+   版本：0.2.0
+   ----------------------------------------------------------------------------
+   约定：
+   * 颜色 / 间距 / 字号 / 圆角 / 阴影全部收敛为下方 design token；
+   * 既有类名全部向后兼容，仅新增变体类（btn-* / row-actions / clickable 等）；
+   * 交互状态（hover / active / focus-visible）统一到控件样式上表达。
+   ========================================================================== */
+
 :root {
-  --bg: #0f1216;
-  --panel: #171b21;
-  --border: #262c35;
-  --text: #e6e9ef;
+  /* 背景色阶 */
+  --bg:        #0e1116;
+  --bg-raised: #151a21;
+  --panel:     #171c24;
+  --panel-2:   #1c222c;
+  --hover:     #202736;
+
+  /* 边框与分隔 */
+  --border:      #262d38;
+  --border-soft: #20262f;
+  --border-strong: #2e3642;
+
+  /* 文本 */
+  --text:  #e7ebf1;
+  --text-2:#b6bfcc;
   --muted: #8b95a5;
-  --accent: #4f8cff;
-  --ok: #3fb950;
-  --bad: #f85149;
-  --warn: #d29922;
+  --faint: #626c7c;
+
+  /* 语义色 */
+  --accent:   #4f8cff;
+  --accent-hover: #6ba0ff;
+  --accent-sub:   #17304f;
+  --ok:    #3fb950;
+  --ok-sub: rgba(63, 185, 80, 0.12);
+  --bad:   #f85149;
+  --bad-sub: rgba(248, 81, 73, 0.12);
+  --warn:  #d29922;
+  --warn-sub: rgba(210, 153, 34, 0.14);
+
+  /* 间距 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius:    8px;
+  --radius-lg: 12px;
+
+  /* 阴影与模糊 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
+
+  /* 字号 */
+  --font-xs: 12px;
+  --font-sm: 13px;
+  --font: 14px;
+  --font-lg: 18px;
+  --font-huge: 22px;
+
   font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 }
 
@@ -15,82 +69,211 @@
   box-sizing: border-box;
 }
 
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--font);
+  line-height: 1.6;
 }
 
+/* ---- 顶层框架 ------------------------------------------------------------ */
+
 .app-header {
-  padding: 16px 24px 0;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: var(--space-4) var(--space-5) 0;
   border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  background: rgba(23, 28, 36, 0.9);
+  backdrop-filter: saturate(180%) blur(10px);
 }
 
 .app-header h1 {
-  margin: 0 0 12px;
-  font-size: 18px;
-  font-weight: 600;
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-lg);
+  font-weight: 650;
+  letter-spacing: 0.2px;
 }
 
 .tabs {
   display: flex;
-  gap: 4px;
-}
-
-.tab {
-  background: transparent;
-  border: 1px solid transparent;
-  border-bottom: none;
-  color: var(--muted);
-  padding: 8px 16px;
-  border-radius: 6px 6px 0 0;
-  cursor: pointer;
-  font-size: 14px;
-}
-
-.tab-active {
-  background: var(--bg);
-  border-color: var(--border);
-  color: var(--text);
+  gap: var(--space-1);
+  overflow-x: auto;
 }
 
 .app-body {
-  padding: 20px 24px 48px;
+  padding: var(--space-5) var(--space-5) 56px;
 }
 
 .page {
   max-width: 1180px;
+  margin: 0 auto;
 }
 
 h2 {
-  font-size: 16px;
-  margin: 0 0 16px;
-}
-
-h3 {
-  font-size: 14px;
-  margin: 24px 0 10px;
-  color: var(--muted);
+  font-size: var(--font-lg);
+  margin: 0 0 var(--space-4);
   font-weight: 600;
 }
 
+h3 {
+  font-size: var(--font-sm);
+  margin: var(--space-5) 0 var(--space-3);
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+/* ---- 页签 ------------------------------------------------------------------ */
+/* 页签本身就是 <button>，用 .tabs 前缀提升优先级，避免被下方全局按钮样式覆盖。 */
+
+.tabs .tab {
+  position: relative;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  margin: 0;
+  padding: 10px var(--space-4);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  cursor: pointer;
+  font-size: var(--font-sm);
+  font-weight: 500;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.tabs .tab:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text-2);
+}
+
+.tabs .tab-active {
+  color: var(--text);
+}
+
+/* 活动页签底部指示条，压在 header 的下边框上 */
+.tabs .tab-active::after {
+  content: "";
+  position: absolute;
+  left: var(--space-3);
+  right: var(--space-3);
+  bottom: -1px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+/* ---- 按钮体系 -------------------------------------------------------------- */
+
+button {
+  font-family: inherit;
+  border: 1px solid transparent;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-sm);
+  line-height: 1.3;
+  padding: 8px var(--space-4);
+  background: var(--accent);
+  color: #ffffff;
+  transition: background 0.15s ease, border-color 0.15s ease,
+              color 0.15s ease, box-shadow 0.15s ease, transform 0.06s ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 次级：描边按钮（用于"取消"等与主操作并列的低优先级动作） */
+.btn-secondary {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text-2);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: #3a4452;
+  color: var(--text);
+}
+
+/* 幽灵：表内行操作，无背景、弱描边 */
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-2);
+  padding: 4px var(--space-2);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* 危险：删除、中断 */
+.btn-danger {
+  background: transparent;
+  border-color: rgba(248, 81, 73, 0.45);
+  color: #ff7b72;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--bad-sub);
+  border-color: var(--bad);
+  color: #ff8a82;
+}
+
+/* 紧凑尺寸：表格行内 */
+.btn-sm {
+  padding: 3px var(--space-3);
+  font-size: var(--font-xs);
+  border-radius: var(--radius-sm);
+  margin-right: 0;
+}
+
+/* 行内操作组：统一用 gap 对齐，不再依赖每个按钮的 margin */
+.row-actions {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* ---- 表单 ------------------------------------------------------------------ */
+
 .row {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: flex-end;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
+  gap: var(--space-1);
+  font-size: var(--font-xs);
   color: var(--muted);
-  min-width: 140px;
+  min-width: 150px;
 }
 
 .field.grow,
@@ -101,261 +284,347 @@ h3 {
 .field.checkbox {
   flex-direction: row;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: auto;
+  font-size: var(--font-sm);
+  color: var(--text-2);
 }
 
 .field-label {
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: var(--muted);
-  margin: 12px 0 6px;
+  margin: var(--space-4) 0 var(--space-2);
+  letter-spacing: 0.2px;
 }
 
-input,
+/* 文本 / 数字 / 下拉 / 文本域：只影响真正的输入控件，不再误伤复选框 */
+input[type="text"],
+input[type="number"],
+input[type="password"],
+input:not([type]),
 select,
 textarea {
-  background: var(--panel);
+  background: var(--bg-raised);
   border: 1px solid var(--border);
   color: var(--text);
-  border-radius: 6px;
-  padding: 7px 9px;
-  font-size: 13px;
+  border-radius: var(--radius-sm);
+  padding: 7px var(--space-3);
+  font-size: var(--font-sm);
   font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="text"]:hover,
+input[type="number"]:hover,
+input[type="password"]:hover,
+input:not([type]):hover,
+select:hover,
+textarea:hover {
+  border-color: var(--border-strong);
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="password"]:focus,
+input:not([type]):focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.18);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--faint);
+}
+
+select {
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+}
+
+/* 复选框：恢复为原生样式，用 accent-color 着色，去掉被撑大的外层形态 */
+input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 0;
 }
 
 textarea {
   width: 100%;
+  resize: vertical;
 }
 
-button {
-  background: var(--accent);
-  border: none;
-  color: #fff;
-  padding: 8px 16px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-  margin-right: 8px;
+/* ---- 横幅 ------------------------------------------------------------------ */
+
+.banner {
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  margin-bottom: var(--space-3);
+  font-size: var(--font-sm);
+  line-height: 1.5;
 }
 
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.banner-error {
+  background: var(--bad-sub);
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  color: #ffb4ae;
 }
 
-button.danger {
-  background: var(--bad);
+.banner-ok {
+  background: var(--ok-sub);
+  border: 1px solid rgba(63, 185, 80, 0.4);
+  color: #97e6a0;
 }
+
+/* ---- 表格 ------------------------------------------------------------------ */
 
 table.grid {
   width: 100%;
   border-collapse: collapse;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   overflow: hidden;
+  box-shadow: var(--shadow-sm);
 }
 
 table.grid th,
 table.grid td {
   text-align: left;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
+  padding: 11px var(--space-3);
+  border-bottom: 1px solid var(--border-soft);
+  font-size: var(--font-sm);
   vertical-align: top;
 }
 
 table.grid th {
   color: var(--muted);
   font-weight: 500;
-  font-size: 12px;
+  font-size: var(--font-xs);
+  letter-spacing: 0.3px;
+  background: var(--panel-2);
+  white-space: nowrap;
 }
 
 table.grid tbody tr:last-child td {
   border-bottom: none;
 }
 
+/* 行默认不可点；点击行用 .clickable 显式开启，避免误导 */
 table.grid tbody tr {
+  transition: background 0.12s ease;
+}
+
+table.grid tbody tr.clickable {
   cursor: pointer;
 }
 
-table.grid tbody tr:hover {
-  background: #1d222a;
+table.grid tbody tr:hover:not(.row-selected) {
+  background: var(--hover);
 }
 
 .row-selected {
-  background: #1d222a;
+  background: var(--hover);
 }
+
+/* ---- 通用工具类 ------------------------------------------------------------ */
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .muted {
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--font-sm);
 }
 
-.banner {
-  padding: 9px 12px;
-  border-radius: 6px;
-  margin-bottom: 14px;
-  font-size: 13px;
-}
-
-.banner-error {
-  background: rgba(248, 81, 73, 0.12);
-  border: 1px solid rgba(248, 81, 73, 0.4);
-  color: #ffb4ae;
-}
-
-.banner-ok {
-  background: rgba(63, 185, 80, 0.12);
-  border: 1px solid rgba(63, 185, 80, 0.4);
-  color: #97e6a0;
-}
+/* ---- 状态标签 -------------------------------------------------------------- */
 
 .pill {
   display: inline-block;
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-size: 12px;
+  padding: 1px var(--space-2);
+  border-radius: 999px;
+  font-size: var(--font-xs);
+  line-height: 1.5;
   border: 1px solid transparent;
+  white-space: nowrap;
 }
 
 .pill-ok {
-  background: rgba(63, 185, 80, 0.15);
+  background: var(--ok-sub);
   color: var(--ok);
   border-color: rgba(63, 185, 80, 0.35);
 }
 
 .pill-bad {
-  background: rgba(248, 81, 73, 0.15);
+  background: var(--bad-sub);
   color: var(--bad);
   border-color: rgba(248, 81, 73, 0.35);
 }
 
 .pill-warn {
-  background: rgba(210, 153, 34, 0.15);
+  background: var(--warn-sub);
   color: var(--warn);
   border-color: rgba(210, 153, 34, 0.35);
 }
 
+/* ---- 指标卡片 -------------------------------------------------------------- */
+
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-  margin-bottom: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 14px 16px;
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-4);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
 }
 
 .card-label {
   color: var(--muted);
-  font-size: 12px;
-  margin-bottom: 6px;
+  font-size: var(--font-xs);
+  margin-bottom: var(--space-2);
 }
 
 .card-value {
-  font-size: 22px;
-  font-weight: 600;
+  font-size: var(--font-huge);
+  font-weight: 650;
+  letter-spacing: -0.4px;
+  font-variant-numeric: tabular-nums;
 }
+
+/* ---- 聊天气泡 -------------------------------------------------------------- */
 
 .chat-log {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-3);
   min-height: 240px;
   max-height: 460px;
   overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 14px;
-  margin-bottom: 12px;
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  margin-bottom: var(--space-3);
 }
 
 .bubble {
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-radius: var(--radius);
+  padding: var(--space-3);
   max-width: 82%;
   white-space: pre-wrap;
   word-break: break-word;
+  box-shadow: var(--shadow-sm);
 }
 
 .bubble-user {
   align-self: flex-end;
-  background: #1f3557;
+  background: var(--accent-sub);
+  border: 1px solid rgba(79, 140, 255, 0.28);
 }
 
 .bubble-assistant {
   align-self: flex-start;
-  background: #1d222a;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
 }
 
 .bubble-role {
-  font-size: 11px;
+  font-size: var(--font-xs);
   color: var(--muted);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
   text-transform: uppercase;
+  letter-spacing: 0.8px;
 }
 
 .bubble-error {
   color: #ffb4ae;
-  font-size: 12px;
-  margin-top: 6px;
+  font-size: var(--font-sm);
+  margin-top: var(--space-2);
 }
 
 .thinking {
   white-space: pre-wrap;
   color: var(--muted);
-  font-size: 12px;
-  background: #14181e;
-  border-left: 2px solid var(--border);
-  padding: 6px 8px;
-  border-radius: 4px;
-  margin: 0 0 6px;
+  font-size: var(--font-xs);
+  background: var(--bg-raised);
+  border-left: 2px solid var(--border-strong);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  margin: 0 0 var(--space-2);
 }
+
+/* ---- Trace 明细 ------------------------------------------------------------ */
 
 .trace-detail {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 14px;
-  margin-bottom: 10px;
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
+  box-shadow: var(--shadow-sm);
 }
 
 .trace-detail summary {
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--font-sm);
+  user-select: none;
+}
+
+.trace-detail summary:hover {
+  color: var(--text-2);
 }
 
 .kv-groups {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 14px;
-  margin-top: 12px;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
 }
 
 .kv-title {
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 600;
-  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: var(--space-1);
 }
 
 .kv-row {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-3);
   padding: 2px 0;
-  font-size: 12px;
+  font-size: var(--font-xs);
 }
 
 .kv-key {
@@ -365,4 +634,99 @@ table.grid tbody tr:hover {
 .kv-value {
   text-align: right;
   word-break: break-all;
+  color: var(--text-2);
+}
+
+/* ---- Trace 任务瀑布图 ------------------------------------------------------ */
+
+.waterfall {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.task-group {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+  box-shadow: var(--shadow-sm);
+}
+
+.task-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.waterfall-row {
+  display: grid;
+  grid-template-columns: 220px 1fr 90px;
+  gap: var(--space-3);
+  align-items: center;
+  padding: 3px var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background 0.12s ease;
+}
+
+.waterfall-row.clickable {
+  cursor: pointer;
+}
+
+.waterfall-row:hover:not(.row-selected) {
+  background: var(--hover);
+}
+
+.waterfall-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.waterfall-track {
+  position: relative;
+  height: 14px;
+  background: var(--bg-raised);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+/* 条宽由行内 style 给出（正比于 total_ms），TTFT 段是条内的浅色分界 */
+.waterfall-bar {
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.waterfall-ttft {
+  display: block;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.waterfall-ok {
+  background: var(--ok);
+}
+
+.waterfall-bad {
+  background: var(--bad);
+}
+
+.waterfall-warn {
+  background: var(--warn);
+}
+
+.waterfall-value {
+  text-align: right;
+  color: var(--text-2);
 }

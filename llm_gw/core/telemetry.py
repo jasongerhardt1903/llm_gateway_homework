@@ -7,7 +7,7 @@
 | Prompt | 名称，版本，hash，Schema 版本                   |
 | 用量   | input，output，cached，reasoning tokens         |
 | 延迟   | queue，route，TTFT，generation，total latency   |
-| 弹性   | attempt，retry，fallback，timeout budget        |
+| 弹性   | attempt，retry，fallback，disposition，timeout budget |
 | 结果   | finish reason，终态，输出校验结果               |
 | 错误   | 稳定错误码，HTTP状态，供应商请求ID              |
 | 成本   | 输入，输出，缓存及总估算成本                    |
@@ -16,7 +16,7 @@
 **Trace**（用 trace/run/step/call 串联链路）。因此 ``to_dict`` 输出既要有
 顶层可索引的标量列，也要有可 JSON 序列化的嵌套结构。
 
-版本：0.2.0
+版本：0.3.0
 """
 
 from __future__ import annotations
@@ -65,12 +65,14 @@ class LatencyBreakdown:
 
 @dataclass
 class ResilienceInfo:
-    """弹性维度：第几次尝试、是否重试、是否降级、超时预算。"""
+    """弹性维度：第几次尝试、是否重试、是否降级、最终处置、超时预算。"""
 
     attempt: int = 1
     retry: int = 0
     fallback: bool = False
     timeout_budget_ms: int = 0
+    #: 最终处置：``retry`` / ``degrade`` / ``fail``；成功完成时为空串。
+    disposition: str = ""
 
 
 @dataclass
@@ -173,6 +175,7 @@ class CallRecord:
             "attempt": self.resilience.attempt,
             "retry": self.resilience.retry,
             "fallback": self.resilience.fallback,
+            "disposition": self.resilience.disposition,
             "timeout_budget_ms": self.resilience.timeout_budget_ms,
             # 结果
             "finish_reason": self.finish_reason,

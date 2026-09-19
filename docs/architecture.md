@@ -89,7 +89,7 @@ TTFT 口径：只认**有业务意义的 delta**（`text_delta` / `thinking_delt
 
 ### 工具调用轮数护栏
 
-`AdvancedConfig.max_tool_rounds` 是**请求校验护栏**：`Router._attempt()` 在调用上游之前用 `Task.tool_rounds()` 统计工具调用轮数，超限即返回 `TOOL_ROUNDS_EXCEEDED`（`RetryAction.NEVER`）。放在上游调用之前，避免为注定被拒的请求付费。
+`AdvancedConfig.max_tool_rounds` 是**请求校验护栏**：`Router._attempt()` 在调用上游之前用 `Task.tool_rounds()` 统计工具调用轮数，超限即返回 `TOOL_ROUNDS_EXCEEDED`（处置为 `fail`）。放在上游调用之前，避免为注定被拒的请求付费。
 
 ### 结构化输出双层保证
 
@@ -106,9 +106,28 @@ TTFT 口径：只认**有业务意义的 delta**（`text_delta` / `thinking_delt
 - 未固定顺序时按 `(消费比, 输入单价, 标签)` 排序，消费比低者优先。
 - `Decision.rejected` 逐条记录被拒模型与原因。路由"为什么选它"和"为什么不选它"同样重要。
 
+### 错误处置：重试 / 降级 / 报错 三选一
+
+需求 Harness 层第 91 行要求网关"根据收集到的错误情况，在重试、降级、报错三者中选一个执行，并妥善记录"。落地方式：
+
+- 每个错误码在 `core/errors.py` 的 `ERROR_DECISIONS` 里绑定一个 `ErrorDisposition`
+  （`retry` / `degrade` / `fail`）与一段中文 `strategy`。**数据放在错误码旁边**，
+  判定函数（`harness/decisions.py`）只读不改，避免错误码与处置分类两处漂移。
+- `Router.execute()` 遍历 `[主路由] + [备用路由]`：`retry` 先在**同一模型**内有限重试、
+  耗尽后换模型；`degrade` 不重试当前模型、直接换下一个；`fail` 立即返回。
+- `retry_assistant_call` 的可重试谓词由路由层注入（`should_auto_retry`），
+  决策表因此是**唯一真源**，不会出现"重试层判一次、降级层再判一次"的漂移。
+- 执行事实经 `ExecutionTrace` 出参回传（`AssistantMessage` 是 adapter 共享传输模型，
+  没有承载位），落库为 `CallRecord.resilience` 的 `attempt` / `retry` / `fallback` /
+  `disposition`，并随 `requests.payload` 供 Trace 页查看。
+- `AUTH_INVALID` 的"报错但不阻塞"体现为响应里的 `warnings` 数组与落库的
+  `disposition=degrade`，请求本身继续正常返回。
+
+逐错误码的处置见 [error-codes.md](./error-codes.md) 第 3 节。
+
 ### 流式不做跨模型降级
 
-`Router.stream()` 只用主路由。一旦开始吐字再换模型重来会产出**重复内容**。降级决策只存在于非流式的 `Router.execute()`，且仅对瞬时失败生效——认证 / 配额 / 内容拒答换模型也不会变好，降级只是浪费。
+`Router.stream()` 只用主路由。一旦开始吐字再换模型重来会产出**重复内容**。降级决策只存在于非流式的 `Router.execute()`。至于"哪些错误值得换模型"由处置决策表回答：瞬时失败（`retry`）与配置类失败（`degrade`）会换模型，确定性失败（`fail`，如请求非法、已流式输出后中断）不会——换模型也不会变好，降级只是浪费。
 
 ### 可观测性：一份数据，三种切法
 
@@ -135,6 +154,12 @@ Metrics / Logs / Trace 不是三套系统，而是同一份 `requests` 表的三
 3. **不进仓库**：`.gitignore` 排除 `llm_gw.sqlite3` 与 `.env`——密钥进数据库与 git init 叠加会直接泄漏。
 
 取值优先级：**模型密钥 > 供应商 preset 约定的环境变量**（`OPENAI_API_KEY` 等），后者便于容器化部署时不必把密钥写进数据库。
+
+> 已知局限（v0.3.0 期间发现，**未在本次修复**）：`_persist_models` 用的是
+> `model_to_payload(model)`，而它刻意把 `api_key` 置为 `None`，因此密钥**实际没有
+> 写进 SQLite**，进程重启后模型密钥为空、回退到环境变量。上面第 1 条（不回显）
+> 的写法同时承担了"写库"与"出参"两个职责，是这次缺口的根因。详见
+> [test-evidence.md](./test-evidence.md) 第 6 节。
 
 ### DeepSeek 是 preset 而不是独立协议
 

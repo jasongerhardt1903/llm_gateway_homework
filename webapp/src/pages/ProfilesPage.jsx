@@ -97,12 +97,18 @@ export default function ProfilesPage() {
                   <td>{profile.template_enabled ? "已启用" : "未启用"}</td>
                   <td>{profile.retry_enabled ? profile.max_retries : "关闭"}</td>
                   <td>
-                    <button type="button" onClick={() => setEditing(editing?.name === profile.name ? null : profile)}>
-                      {editing?.name === profile.name ? "取消" : "编辑"}
-                    </button>
-                    <button type="button" className="danger" onClick={() => handleDelete(profile)}>
-                      删除
-                    </button>
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="btn-ghost btn-sm"
+                        onClick={() => setEditing(editing?.name === profile.name ? null : profile)}
+                      >
+                        {editing?.name === profile.name ? "取消" : "编辑"}
+                      </button>
+                      <button type="button" className="btn-danger btn-sm" onClick={() => handleDelete(profile)}>
+                        删除
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

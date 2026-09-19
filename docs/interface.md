@@ -84,9 +84,14 @@ task does not match schema:
   "terminal": "done",             // done | error | cancelled
   "text": "你好！有什么可以帮你？",
   "error_message": null,
-  "usage": { "input": 12, "output": 9, "total_tokens": 21, "cost": 0.0000234 }
+  "usage": { "input": 12, "output": 9, "total_tokens": 21, "cost": 0.0000234 },
+  "warnings": []                  // 降级/告警信息；无告警时为空数组
 }
 ```
+
+`warnings` 是**非阻塞**告警：例如认证失败（`AUTH_INVALID`）时网关会换成路由表
+下一个模型继续，同时把 `"AUTH_INVALID: 已降级 A → B；…"` 追加到该数组，请求本身
+正常返回。处置决策见 [error-codes.md](./error-codes.md) 第 3 节。
 
 ### `POST /v1/tasks:stream` — 流式（默认）
 
@@ -243,7 +248,7 @@ data: [DONE]
 - `POST/PUT /api/models` 里 `api_key` 缺省表示**不修改**已有密钥，传空串表示**清除**。
 - 响应里的 `api_key` 恒为 `null`，只回显 `api_key_set` 布尔量——密钥绝不回显给控制台。
 - 实际调用时的取值优先级：模型密钥 > 供应商 preset 约定的环境变量，见 README。
-- `advanced.max_tool_rounds` 是工具调用轮数护栏，超限即返回 `TOOL_ROUNDS_EXCEEDED`（`RetryAction.NEVER`）。
+- `advanced.max_tool_rounds` 是工具调用轮数护栏，超限即返回 `TOOL_ROUNDS_EXCEEDED`（处置为 `fail`）。
 
 ### `GET /api/dashboard`
 

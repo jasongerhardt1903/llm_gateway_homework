@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 
 import httpx
 
 from llm_gw.adapter.factory import create_adapter
 from llm_gw.harness.service import GatewayService, create_app
 from llm_gw.harness.storage import Storage
+from llm_gw.router.profile import GwProfile, ProfileModelRef
 from llm_gw.router.registry import CapabilityRegistry
 from llm_gw.router.router import Router
 from llm_gw.util.clock import FakeClock
@@ -245,6 +247,13 @@ def _validated(**input_overrides):
     return validate_schema(_task_payload(**input_overrides))
 
 
+def _validated_with_profile(name: str):
+    """profile 是顶层字段，不能塞进 ``input``。"""
+    from llm_gw.core.schema import validate_schema
+
+    return validate_schema({**_task_payload(), "profile": name})
+
+
 async def test_ttft_is_measured_from_first_business_delta(openai_model):
     storage = await Storage(":memory:").init()
     clock = _StepClock()
@@ -296,3 +305,95 @@ async def test_stream_records_trace_and_prompt_fingerprint(openai_model):
     assert rows[0]["trace_id"] == "trace-abc"
     assert len(rows[0]["prompt_sha256"]) == 64  # sha256 十六进制长度
     assert rows[0]["stream_chunk_count"] > 0
+
+
+# --------------------------------------------------------------------------
+# 处置落库：重试 / 降级 / 报错 三选一必须可观测
+# --------------------------------------------------------------------------
+
+
+def _two_model_service(primary, backup, primary_transport, backup_transport, storage):
+    """主备两模型 + 静态路由，重试关闭以便精确断言调用次数。"""
+    adapters = {
+        primary.label(): create_adapter(
+            primary.api, client_for(primary_transport, base_url=primary.base_url)
+        ),
+        backup.label(): create_adapter(
+            backup.api, client_for(backup_transport, base_url=backup.base_url)
+        ),
+    }
+    registry = CapabilityRegistry()
+    registry.register_all([primary, backup])
+    registry.set_profile(
+        GwProfile(
+            name="smart",
+            models=[ProfileModelRef(primary.label()), ProfileModelRef(backup.label())],
+            route_mode="static",
+            static_order=[primary.label(), backup.label()],
+            retry_enabled=False,
+        )
+    )
+    router = Router(registry, adapter_for=lambda model: adapters[model.label()], clock=FakeClock())
+    return GatewayService(router, storage, clock=FakeClock())
+
+
+async def test_auth_failure_degrades_and_records_resilience(openai_model):
+    """认证失败：换下一个模型继续，并把降级事实落库、把告警返回给调用方。"""
+    primary = openai_model
+    backup = replace(openai_model, id="gpt-4o")
+    storage = await Storage(":memory:").init()
+    service = _two_model_service(
+        primary,
+        backup,
+        _json_transport({"error": {"message": "invalid api key"}}, status=401),
+        _json_transport(_completion_body("你好")),
+        storage,
+    )
+
+    message = await service.complete(_validated_with_profile("smart"))
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert message.stop_reason != "error"
+    assert message.text() == "你好"
+    assert rows[0]["attempt"] == 2
+    assert rows[0]["fallback"] == 1
+    assert rows[0]["disposition"] == "degrade"
+    assert rows[0]["error_code"] is None  # 最终成功，错误码不落库
+    assert any("AUTH_INVALID" in warning for warning in service.last_warnings)
+
+
+async def test_post_task_response_carries_warnings(openai_model):
+    primary = openai_model
+    backup = replace(openai_model, id="gpt-4o")
+    service = _two_model_service(
+        primary,
+        backup,
+        _json_transport({"error": {"message": "invalid api key"}}, status=401),
+        _json_transport(_completion_body("你好")),
+        None,
+    )
+
+    async with await _client(create_app(service)) as client:
+        response = await client.post("/v1/tasks", json={**_task_payload(), "profile": "smart"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["text"] == "你好"
+    assert body["warnings"]
+    assert any("AUTH_INVALID" in warning for warning in body["warnings"])
+
+
+async def test_successful_call_records_no_disposition(openai_model):
+    storage = await Storage(":memory:").init()
+    service, _ = _build(openai_model, _json_transport(_completion_body("hi")), storage=storage)
+
+    await service.complete(_validated())
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert rows[0]["attempt"] == 1
+    assert rows[0]["retry"] == 0
+    assert rows[0]["fallback"] == 0
+    assert rows[0]["disposition"] == ""
+    assert service.last_warnings == []

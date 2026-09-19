@@ -5,11 +5,12 @@
 1. **归一化**（移植 pi 的 ``error-body.ts``）——不同 SDK 把 HTTP 状态与响应体
    塞在不同字段里（``statusCode`` / ``status`` / ``$metadata.httpStatusCode`` /
    ``$response.statusCode``），只读 ``message`` 会丢掉关键信息。
-2. **可重试分类**——需求第 88 行的决策表要求"有些错误可重试，有些不可"。
-   配额/账单耗尽这类确定性失败必须快速失败，不能白白重试。
+2. **处置分类**——需求 Harness 层第 91-104 行的决策表要求网关在"重试 / 降级 /
+   报错"三者中**选一个**：有些错误可重试，有些不可，有些应换模型。配额/账单
+   耗尽这类确定性失败必须快速失败，不能白白重试。
 3. **脱敏**——需求要求对记录字段脱敏，密钥绝不能进日志。
 
-版本：0.2.0
+版本：0.3.0
 """
 
 from __future__ import annotations
@@ -24,8 +25,9 @@ from .messages import AssistantMessage
 
 __all__ = [
     "ErrorCode",
-    "RETRY_DECISION",
-    "RetryAction",
+    "ERROR_DECISIONS",
+    "ErrorDecision",
+    "ErrorDisposition",
     "GatewayError",
     "NormalizedError",
     "normalize_provider_error",
@@ -68,7 +70,7 @@ class ErrorCode(str, Enum):
     STREAM_INTERRUPTED_AFTER_DATA = "STREAM_INTERRUPTED_AFTER_DATA"
     # 输出校验失败（JSON/Schema）——有限修复
     OUTPUT_SCHEMA_INVALID = "OUTPUT_SCHEMA_INVALID"
-    # 内容拒答——不得绕过模型
+    # 内容拒答——更换模型重试，但每个模型最多尝试一次
     CONTENT_REFUSED = "CONTENT_REFUSED"
     # 客户端取消
     CANCELLED = "CANCELLED"
@@ -76,46 +78,99 @@ class ErrorCode(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class RetryAction(str, Enum):
-    """需求第 88 行决策表的动作枚举。"""
+class ErrorDisposition(str, Enum):
+    """需求 Harness 层第 91 行：错误发生后在"重试 / 降级 / 报错"三者中选一个。"""
 
-    NEVER = "never"
-    RETRY_AFTER_FIX = "retry_after_fix"
-    RETRY_AFTER_CONFIG = "retry_after_config"
-    REJECT_OR_SWITCH_POOL = "reject_or_switch_pool"
-    LIMITED_RETRY = "limited_retry"
-    LIMITED_RETRY_OR_FALLBACK = "limited_retry_or_fallback"
-    NO_BLIND_REGENERATE = "no_blind_regenerate"
-    LIMITED_REPAIR = "limited_repair"
-    NO_BYPASS = "no_bypass"
+    #: 网关自行有限重试**同一个**模型（瞬时错误：连接抖动、限流、过载）。
+    RETRY = "retry"
+    #: 不重试当前模型，直接换路由表中下一个模型（认证、排队、内容拒答等）。
+    DEGRADE = "degrade"
+    #: 直接返回错误，不做任何后续动作（请求非法、已流式输出后中断等）。
+    FAIL = "fail"
 
 
-#: 需求第 88 行「阶段 / 典型错误 / 是否适合重试」决策表。
-RETRY_DECISION: dict[ErrorCode, RetryAction] = {
-    ErrorCode.AUTH_INVALID: RetryAction.NEVER,
-    ErrorCode.REQUEST_INVALID: RetryAction.NEVER,
+@dataclass(frozen=True)
+class ErrorDecision:
+    """单个错误码的处置决策。"""
+
+    disposition: ErrorDisposition
+    #: 中文说明，供日志与响应；文案与需求文档「处理策略」列保持一致。
+    strategy: str = ""
+
+    @property
+    def retryable(self) -> bool:
+        """是否允许网关自动重试同一模型（不改变请求）。"""
+        return self.disposition is ErrorDisposition.RETRY
+
+
+#: 需求 Harness 层第 91-104 行「阶段 / 典型错误 / 是否适合重试 / 处理策略」决策表。
+#:
+#: 几个非显然的定级，理由如下：
+#:
+#: - ``PROMPT_INVALID`` / ``ROUTE_NO_CANDIDATE`` / ``OUTPUT_SCHEMA_INVALID`` 定为
+#:   ``DEGRADE`` 而非 ``RETRY``：文档写的是"**修正请求后**重试""**配置变化后**
+#:   重试"，前提是请求或配置被改变。网关自身不修改请求，原样重试同一模型只会
+#:   白耗一次配额，因此直接进入文档要求的"按照路由更换模型再重试"。
+#: - ``CONTENT_REFUSED`` 定为 ``DEGRADE``：不重试当前模型、只换下一个，天然满足
+#:   "每个模型最多尝试一次"（路由只提供主备两个候选）。
+#: - ``STREAM_INTERRUPTED_AFTER_DATA`` 定为 ``FAIL``：已吐过内容，换模型重来会产出
+#:   重复文本，只能如实报错，由客户端决定。
+ERROR_DECISIONS: dict[ErrorCode, ErrorDecision] = {
+    ErrorCode.AUTH_INVALID: ErrorDecision(
+        ErrorDisposition.DEGRADE,
+        "更换路由表中下一个模型并告警，不阻塞；没有下一个模型则返回错误。",
+    ),
+    ErrorCode.REQUEST_INVALID: ErrorDecision(
+        ErrorDisposition.FAIL, "直接返回错误，不重试。"
+    ),
     # 工具轮数超限是请求本身的问题，重试同一个请求只会再次超限。
-    ErrorCode.TOOL_ROUNDS_EXCEEDED: RetryAction.NEVER,
-    ErrorCode.PROMPT_INVALID: RetryAction.RETRY_AFTER_FIX,
-    ErrorCode.ROUTE_NO_CANDIDATE: RetryAction.RETRY_AFTER_CONFIG,
-    ErrorCode.QUEUE_REJECTED: RetryAction.REJECT_OR_SWITCH_POOL,
-    ErrorCode.CONN_FAILED: RetryAction.LIMITED_RETRY,
-    ErrorCode.RATE_LIMITED: RetryAction.LIMITED_RETRY_OR_FALLBACK,
-    ErrorCode.UPSTREAM_OVERLOADED: RetryAction.LIMITED_RETRY_OR_FALLBACK,
-    ErrorCode.STREAM_INTERRUPTED_AFTER_DATA: RetryAction.NO_BLIND_REGENERATE,
-    ErrorCode.OUTPUT_SCHEMA_INVALID: RetryAction.LIMITED_REPAIR,
-    ErrorCode.CONTENT_REFUSED: RetryAction.NO_BYPASS,
-    ErrorCode.CANCELLED: RetryAction.NEVER,
-    ErrorCode.UNKNOWN: RetryAction.NEVER,
+    ErrorCode.TOOL_ROUNDS_EXCEEDED: ErrorDecision(
+        ErrorDisposition.FAIL, "直接返回错误，不重试。"
+    ),
+    ErrorCode.PROMPT_INVALID: ErrorDecision(
+        ErrorDisposition.DEGRADE,
+        "修正请求后重试；网关无法自行修正请求，直接按路由更换模型再试。",
+    ),
+    ErrorCode.ROUTE_NO_CANDIDATE: ErrorDecision(
+        ErrorDisposition.DEGRADE, "配置变化后重试；无兼容模型时直接返回错误。"
+    ),
+    ErrorCode.QUEUE_REJECTED: ErrorDecision(
+        ErrorDisposition.DEGRADE, "拒绝或换池。"
+    ),
+    ErrorCode.CONN_FAILED: ErrorDecision(
+        ErrorDisposition.RETRY, "有限重试；达到最大重试次数后按路由更换模型再试。"
+    ),
+    ErrorCode.RATE_LIMITED: ErrorDecision(
+        ErrorDisposition.RETRY,
+        "有限重试或 fallback；达到最大重试次数后按路由更换模型再试。",
+    ),
+    ErrorCode.UPSTREAM_OVERLOADED: ErrorDecision(
+        ErrorDisposition.RETRY,
+        "有限重试或 fallback；达到最大重试次数后按路由更换模型再试。",
+    ),
+    ErrorCode.STREAM_INTERRUPTED_AFTER_DATA: ErrorDecision(
+        ErrorDisposition.FAIL, "不盲目重新生成；已输出则如实报错，由客户端决定。"
+    ),
+    ErrorCode.OUTPUT_SCHEMA_INVALID: ErrorDecision(
+        ErrorDisposition.DEGRADE,
+        "有限修复；修复在 adapter 的 validate_with_repair 内对同一模型做（最多 2 次），"
+        "修复超限后按路由更换模型再试。",
+    ),
+    ErrorCode.CONTENT_REFUSED: ErrorDecision(
+        ErrorDisposition.DEGRADE, "更换模型重试，每个模型最多尝试一次。"
+    ),
+    ErrorCode.CANCELLED: ErrorDecision(ErrorDisposition.FAIL, "客户端取消，不重试。"),
+    ErrorCode.UNKNOWN: ErrorDecision(ErrorDisposition.FAIL, "未知错误，直接返回。"),
 }
 
-#: 可以自动重试的错误码（不含需要人工修正/配置的）。
+#: 可以自动重试的错误码：处置为 ``RETRY`` 者。恰好等于
+#: ``{CONN_FAILED, RATE_LIMITED, UPSTREAM_OVERLOADED}``，因此
+#: :attr:`GatewayError.retryable` 与 :func:`is_retryable_provider_error` 的
+#: 外部语义保持不变。
 AUTO_RETRYABLE_CODES: frozenset[ErrorCode] = frozenset(
-    {
-        ErrorCode.CONN_FAILED,
-        ErrorCode.RATE_LIMITED,
-        ErrorCode.UPSTREAM_OVERLOADED,
-    }
+    code
+    for code, decision in ERROR_DECISIONS.items()
+    if decision.disposition is ErrorDisposition.RETRY
 )
 
 

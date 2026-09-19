@@ -2,6 +2,92 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.4.0
+
+本轮按需求文档业务与交互层第 34 行实现 Trace 页的**按任务图形化展示**：除逐条调用
+列表外，新增「任务视图」，按 `run_id`（agent 的一次 task）分组做时间轴瀑布图。
+
+### 新增
+
+- **任务视图瀑布图**（`webapp/src/pages/TracePage.jsx`）：新增 `TaskWaterfall`
+  组件与 `group_by_task` / `bar_geometry` 纯函数。
+  - 按 `run_id` 分组，`run_id` 为空的记录归入「未标记任务」；组内按时间正序。
+  - 每根横条宽度**正比于 `total_ms`**（以本次结果里最长的调用为基准，跨任务可横向比较），
+    条内浅色段标出 **TTFT** 分界，颜色按终态区分（done / error / cancelled）。
+  - 组头给出任务级汇总：调用数 / 合计耗时 / 错误数 / 合计成本。
+  - 点击横条复用既有链路明细（8 维度结构化展示）。
+- **视图切换**：Trace 页搜索行新增「列表 / 任务视图」切换，默认仍为列表。
+- **样式**（`webapp/src/styles.css`）：新增 `.waterfall` / `.task-group` /
+  `.waterfall-row` 等类，沿用既有 design token。
+
+### 变更
+
+- 版本号 `0.3.0` → `0.4.0`（`llm_gw/__init__.py`、`pyproject.toml`、
+  `webapp/package.json`、`llm_gw/harness/service.py`）。
+
+## 0.3.0
+
+本轮按需求文档 Harness 层第 91-104 行实现**错误处置三选一**：网关根据收集到的错误
+情况，在「**重试 / 降级 / 报错**」中选择一个执行，并把决策与执行事实妥善记录。
+
+### 新增
+
+- **错误处置决策表**（`llm_gw/core/errors.py`）：新增 `ErrorDisposition`
+  （`retry` / `degrade` / `fail`）与 `ErrorDecision`（`disposition` + `strategy`），
+  落成 `ERROR_DECISIONS: dict[ErrorCode, ErrorDecision]`——需求「处理策略」列的
+  逐行对应。**数据与错误码放在一起**，避免错误码与处置分类两处漂移。
+  - `AUTO_RETRYABLE_CODES` 改为**派生**自决策表（`disposition is RETRY`），
+    结果集与旧值一致：`{CONN_FAILED, RATE_LIMITED, UPSTREAM_OVERLOADED}`。
+- **判定函数**（`llm_gw/harness/decisions.py`）：`decision_for` / `disposition_for` /
+  `should_auto_retry` / `should_degrade` / `describe_decision`。
+- **`ExecutionTrace`**（`llm_gw/router/router.py`）：执行事实出参，承载
+  `attempts` / `retries` / `fallback` / `disposition` / `degraded_from` /
+  `degraded_to` / `warnings`。`AssistantMessage` 是 adapter 共享传输模型、没有
+  承载位，故经可选出参回传。
+- **非阻塞告警**：`POST /v1/tasks` 响应新增 `warnings` 数组。认证失败降级时写入
+  `"AUTH_INVALID: 已降级 A → B；…"`，请求本身正常返回。
+- **`resilience.disposition`**：`ResilienceInfo` 新增字段并展开到
+  `CallRecord.to_dict()`，随 `requests.payload` 落库，Trace 页「弹性」分组可查。
+
+### 变更
+
+- **重试谓词可注入**（`llm_gw/harness/retry.py`）：`retry_assistant_call` 新增
+  `is_retryable` 参数。原先由 `retry_assistant_call` 内部正则判断可重试、与
+  `RETRY_DECISION` 各判一次，两者可能漂移；现在路由层注入
+  `should_auto_retry(_code_from(response))`，**决策表成为唯一真源**。
+- **`Router.execute()` 按处置遍历候选链**：`retry` 先在同一模型内有限重试、
+  耗尽后换模型；`degrade` 直接换下一个；`fail` 立即返回。
+- **错误消息统一带错误码前缀**：`Router._attempt` 的异常分支由
+  `_error_message(str(exc))` 改为 `f"{classify_error_code(exc).value}: {exc}"`。
+  此前 trace 里的 `error_code` 常因缺前缀而归为 `UNKNOWN`。
+- **`resilience` 真实落库**：`GatewayService.complete()` 此前既不传 `on_fallback`
+  也不填 `resilience`，`requests` 表的 `attempt` / `retry` / `fallback` 恒为
+  `1 / 0 / 0`；现经 `ExecutionTrace` 回传并如实写入。**无需 DDL 变更**
+  （`disposition` 走 `payload` JSON）。
+- 版本号提升至 `0.3.0`（`llm_gw/__init__.py`、`pyproject.toml`、
+  `webapp/package.json`、FastAPI `version`）。
+
+### 破坏性变更
+
+- **认证失败不再快速失败**：`AUTH_INVALID` 由 `fail` 改为 `degrade`——若路由表中
+  还有下一个模型就换模型继续并附告警，只有没有下一个模型时才返回错误。
+- **内容拒答改为换模型重试**：`CONTENT_REFUSED` 由"不换模型绕过"改为
+  `degrade`——更换模型重试，**每个模型最多尝试一次**（候选链主备各一次，
+  天然满足）。这是安全语义的反转，请确认符合预期。
+- **移除 `RetryAction` 与 `RETRY_DECISION`**：由 `ErrorDisposition` /
+  `ErrorDecision` / `ERROR_DECISIONS` 取代。
+- **移除 `should_fallback`**：由 `should_degrade` 取代（语义从"是否降级"
+  收窄为"是否**直接**降级、不重试当前模型"）。
+- **`Router.execute()` 签名变更**：`on_fallback` 回调改为 `trace` 出参，
+  调用方（`GatewayService`）需相应调整。
+
+### 迁移说明
+
+- **调用方**：若依赖 `RetryAction` / `RETRY_DECISION` / `should_fallback`，
+  改用 `ErrorDisposition` / `ERROR_DECISIONS` / `should_degrade`；
+  `Router.execute()` 的 `on_fallback` 改为传入 `ExecutionTrace` 实例。
+- **旧数据库**：无需迁移，`requests` 表结构未变。
+
 ## 0.2.0
 
 本轮按需求文档更新实现：新增 **gwprofile 层**、模型**高级配置项**与**密钥管理**，
@@ -30,7 +116,7 @@
   - 取值优先级：模型密钥 > 供应商 preset 约定的环境变量；
   - 脱敏覆盖 `api_key` 键名（`redact_mapping`），密钥不进入 Trace / Logs。
 - **`TOOL_ROUNDS_EXCEEDED` 错误码**：`max_tool_rounds` 作为请求校验护栏，
-  超过上限即拒绝（`RetryAction.NEVER`），在调用上游之前生效。
+  超过上限即拒绝（处置为 `fail`），在调用上游之前生效。
 - **控制台 Profile 页**：模型多选 + 模版 + 路由模式 + 静态顺序 + 重试配置。
 - **`.gitignore`**：排除 `.venv/`、`__pycache__/`、`node_modules/`、`webapp/dist/`、
   `llm_gw.sqlite3`、`.env`、`.pytest_cache/`、`.coverage`、`.trae/`。

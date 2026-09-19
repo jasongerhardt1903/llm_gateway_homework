@@ -153,7 +153,7 @@ export default function ChatPage() {
         <button type="button" onClick={send} disabled={busy}>
           发送
         </button>
-        <button type="button" className="danger" onClick={stop} disabled={!busy}>
+        <button type="button" className="btn-danger" onClick={stop} disabled={!busy}>
           中断
         </button>
       </div>

@@ -44,36 +44,43 @@
 
 同理，`CONTENT_REFUSED` 正则刻意要求「拒答」与「内容/安全」语境**同时出现**——单独一个 `refused` 常见于连接错误（`ConnectError("refused")`），直接匹配会把网络故障误判成内容拒答。
 
-## 3. 重试决策表
+## 3. 处置决策表（重试 / 降级 / 报错 三选一）
 
-需求第 88 行的表落成 `core/errors.py` 的 `RETRY_DECISION: dict[ErrorCode, RetryAction]`。**数据放在错误码旁边**，避免错误码与重试分类两处漂移；`harness/decisions.py` 只提供判定函数。
+需求 Harness 层第 91-104 行的表落成 `core/errors.py` 的 `ERROR_DECISIONS: dict[ErrorCode, ErrorDecision]`。**数据放在错误码旁边**，避免错误码与处置分类两处漂移；`harness/decisions.py` 只提供判定函数。每个错误码在「重试 / 降级 / 报错」中**选一个**：
 
-| 阶段 | 典型错误 | 是否适合重试 | 错误码 | `RetryAction` | 网关行为 |
+- **`retry`**：网关自行对**同一**模型有限重试（瞬时错误：连接抖动、限流、过载）；
+- **`degrade`**：不重试当前模型，直接换路由表下一个（备用路由）；
+- **`fail`**：直接返回错误，不做任何后续动作（请求非法、已流式输出后中断等）。
+
+| 阶段 | 典型错误 | 是否适合重试 | 错误码 | 处置 | 网关行为 |
 |---|---|---|---|---|---|
-| 认证 | API Key 无效，租户禁用 | 否 | `AUTH_INVALID` | `NEVER` | 立即失败，不等待 |
-| 请求验证 | 参数非法，Schema 缺失 | 否 | `REQUEST_INVALID` | `NEVER` | 立即失败，返回字段路径 |
-| Prompt | 缺变量，超过预算 | 修正请求后重试 | `PROMPT_INVALID` | `RETRY_AFTER_FIX` | 不自动重试，提示修正 |
-| 路由 | 无兼容模型 | 配置变化后重试 | `ROUTE_NO_CANDIDATE` | `RETRY_AFTER_CONFIG` | 不自动重试，提示改配置 |
-| 请求验证 | 工具调用轮数超上限 | 否 | `TOOL_ROUNDS_EXCEEDED` | `NEVER` | 在调用上游之前拒绝，避免为注定被拒的请求付费 |
-| 排队 | 并发已满，截止时间不足 | 可拒绝或换池 | `QUEUE_REJECTED` | `REJECT_OR_SWITCH_POOL` | 拒绝或切池 |
-| 连接 | 网络抖动，短暂 5xx | 有限重试 | `CONN_FAILED` | `LIMITED_RETRY` | 指数退避重试 |
-| 首 Token 前 | 429，超时，过载 | 有限重试或 fall back | `RATE_LIMITED` / `UPSTREAM_OVERLOADED` | `LIMITED_RETRY_OR_FALLBACK` | 退避重试，仍失败则降级备用 |
-| 已流式输出 | 流中断 | **不盲目重新生成** | `STREAM_INTERRUPTED_AFTER_DATA` | `NO_BLIND_REGENERATE` | 发流内 `error`，不发 `[DONE]` |
-| 输出校验 | JSON/Schema 不符 | 有限修复 | `OUTPUT_SCHEMA_INVALID` | `LIMITED_REPAIR` | 修复至多 `max_attempts` 次 |
-| 内容安全 | 模型拒答 | 不得绕过 | `CONTENT_REFUSED` | `NO_BYPASS` | 如实返回，不换模型绕过 |
-| 客户端 | 取消 | 否 | `CANCELLED` | `NEVER` | 取消上游并释放槽位 |
+| 认证 | API Key 无效，租户禁用 | 否 | `AUTH_INVALID` | `degrade` | 换成路由表中下一个模型继续，并附 `warnings` 告警**不阻塞**；没有下一个模型则返回错误 |
+| 请求验证 | 参数非法，Schema 缺失 | 否 | `REQUEST_INVALID` | `fail` | 直接返回错误，不重试 |
+| 请求验证 | 工具调用轮数超上限 | 否 | `TOOL_ROUNDS_EXCEEDED` | `fail` | 在调用上游之前拒绝，避免为注定被拒的请求付费 |
+| Prompt | 缺变量，超过预算 | 修正请求后重试 | `PROMPT_INVALID` | `degrade` | 网关不修改请求，按路由更换模型再试 |
+| 路由 | 无兼容模型 | 配置变化后重试 | `ROUTE_NO_CANDIDATE` | `degrade` | 无兼容候选直接返回错误 |
+| 排队 | 并发已满，截止时间不足 | 可拒绝或换池 | `QUEUE_REJECTED` | `degrade` | 拒绝或换池 |
+| 连接 | 网络抖动，短暂 5xx | 有限重试 | `CONN_FAILED` | `retry` | 指数退避重试，耗尽后按路由换模型 |
+| 首 Token 前 | 429，超时，过载 | 有限重试或 fall back | `RATE_LIMITED` / `UPSTREAM_OVERLOADED` | `retry` | 退避重试，耗尽后按路由换模型 |
+| 已流式输出 | 流中断 | **不盲目重新生成** | `STREAM_INTERRUPTED_AFTER_DATA` | `fail` | 发流内 `error`，不发 `[DONE]`；不跨模型重生成 |
+| 输出校验 | JSON/Schema 不符 | 有限修复 | `OUTPUT_SCHEMA_INVALID` | `degrade` | 网关不做同模型盲目重试，按路由换模型再试 |
+| 内容安全 | 模型拒答 | 换模型重试，每模型最多一次 | `CONTENT_REFUSED` | `degrade` | 换下一个模型重试；每个模型恰好尝试一次（主备两个候选） |
+| 客户端 | 取消 | 否 | `CANCELLED` | `fail` | 取消上游并释放槽位 |
 
 判定函数：
 
 | 函数 | 回答 |
 |---|---|
-| `decision_for(code)` | 该码对应哪个 `RetryAction`（未知码按 `NEVER`） |
-| `should_auto_retry(code)` | 是否允许网关**自动重试**（不改变请求） |
-| `should_fallback(code)` | 是否允许**切换到备用路由** |
-| `describe_decision(code)` | 中文说明，供日志与响应 |
+| `decision_for(code)` | 该码对应的完整 `ErrorDecision`（未知码按 `FAIL`） |
+| `disposition_for(code)` | 三选一中的哪一个：`retry` / `degrade` / `fail` |
+| `should_auto_retry(code)` | 是否允许网关**自动重试同一模型** |
+| `should_degrade(code)` | 是否应**直接切换备用路由**（不重试当前模型） |
+| `describe_decision(code)` | 中文说明（即 `strategy`），供日志与响应 |
 
-`should_auto_retry` 为真 ⇔ 动作 ∈ `{LIMITED_RETRY, LIMITED_RETRY_OR_FALLBACK}`。
-`should_fallback` 为真 ⇔ 动作 ∈ `{LIMITED_RETRY_OR_FALLBACK, REJECT_OR_SWITCH_POOL}`。
+> `PROMPT_INVALID` / `ROUTE_NO_CANDIDATE` / `OUTPUT_SCHEMA_INVALID` 定为 `degrade`：
+> 需求写的是"**修正请求后**重试""**配置变化后**重试"，前提是请求或配置被改变。
+> 网关自身不修改请求，原样重试同一模型只会白耗一次配额，因此直接进入"按照路由
+> 更换模型再重试"。
 
 ## 4. 两层可重试判定
 
