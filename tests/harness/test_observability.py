@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import aiosqlite
 import pytest
 
 from llm_gw.core.errors import ErrorCode
@@ -86,6 +87,8 @@ async def test_save_call_persists_all_eight_dimensions(storage):
     # Prompt
     assert flat["prompt_name"] == "summarize"
     assert flat["prompt_sha256"] == "deadbeef"
+    # 路由：生效的 profile 名
+    assert flat["profile"] == "smart"
     # 用量
     assert flat["usage"]["input"] == 100
     assert flat["usage"]["total_tokens"] == 150
@@ -137,6 +140,97 @@ async def test_secrets_in_metadata_are_redacted(storage):
     assert "sk-super-secret" not in str(metadata)
     assert "abc123" not in str(metadata)
     assert metadata["note"] == "keep-me"
+
+
+# --------------------------------------------------------------------------
+# 旧库迁移：v0.1.0 的 logical_model 列改名为 profile
+# --------------------------------------------------------------------------
+
+
+#: v0.1.0 的 requests 表结构——与当前唯一差别是路由维度列叫 logical_model。
+_LEGACY_REQUESTS_DDL = """
+CREATE TABLE requests (
+    call_id             TEXT PRIMARY KEY,
+    trace_id            TEXT NOT NULL DEFAULT '',
+    run_id              TEXT NOT NULL DEFAULT '',
+    step_id             TEXT NOT NULL DEFAULT '',
+    ts                  REAL NOT NULL,
+    logical_model       TEXT NOT NULL DEFAULT '',
+    provider            TEXT NOT NULL DEFAULT '',
+    model               TEXT NOT NULL DEFAULT '',
+    api                 TEXT NOT NULL DEFAULT '',
+    prompt_name         TEXT NOT NULL DEFAULT '',
+    prompt_version      TEXT NOT NULL DEFAULT '',
+    prompt_sha256       TEXT NOT NULL DEFAULT '',
+    terminal            TEXT NOT NULL DEFAULT 'done',
+    finish_reason       TEXT NOT NULL DEFAULT '',
+    error_code          TEXT,
+    error_message       TEXT,
+    http_status         INTEGER,
+    provider_request_id TEXT,
+    attempt             INTEGER NOT NULL DEFAULT 1,
+    retry               INTEGER NOT NULL DEFAULT 0,
+    fallback            INTEGER NOT NULL DEFAULT 0,
+    output_valid        INTEGER,
+    queue_ms            REAL NOT NULL DEFAULT 0,
+    route_ms            REAL NOT NULL DEFAULT 0,
+    ttft_ms             REAL NOT NULL DEFAULT 0,
+    generation_ms       REAL NOT NULL DEFAULT 0,
+    total_ms            REAL NOT NULL DEFAULT 0,
+    input_tokens        INTEGER NOT NULL DEFAULT 0,
+    output_tokens       INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens  INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens    INTEGER,
+    total_tokens        INTEGER NOT NULL DEFAULT 0,
+    cost_total          REAL NOT NULL DEFAULT 0,
+    stream_chunk_count  INTEGER NOT NULL DEFAULT 0,
+    payload             TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX idx_requests_ts ON requests(ts);
+CREATE INDEX idx_requests_trace ON requests(trace_id);
+"""
+
+
+async def test_init_migrates_legacy_logical_model_column(tmp_path):
+    """v0.1.0 生成的库直接给 v0.2.0 用：启动时自动改名，历史记录不丢。"""
+    path = tmp_path / "legacy.sqlite3"
+    db = await aiosqlite.connect(path)
+    await db.executescript(_LEGACY_REQUESTS_DDL)
+    await db.execute(
+        "INSERT INTO requests (call_id, ts, logical_model) VALUES (?, ?, ?)",
+        ("c1", 1.0, "fast-chat"),
+    )
+    await db.commit()
+    await db.close()
+
+    store = await Storage(path).init()
+    try:
+        cursor = await store._conn().execute("PRAGMA table_info(requests)")
+        columns = {row["name"] for row in await cursor.fetchall()}
+        assert "profile" in columns
+        assert "logical_model" not in columns
+
+        cursor = await store._conn().execute("SELECT profile FROM requests WHERE call_id = 'c1'")
+        assert (await cursor.fetchone())["profile"] == "fast-chat"
+    finally:
+        await store.close()
+
+
+async def test_init_is_idempotent_on_migrated_schema(tmp_path):
+    """迁移只做一次：已是 v0.2.0 的库重复启动不报错，数据可查。"""
+    path = tmp_path / "v02.sqlite3"
+    first = await Storage(path).init()
+    await first.save_call(_record(call_id="c1"))
+    await first.close()
+
+    again = await Storage(path).init()
+    try:
+        rows = await again.recent_calls()
+        assert [row["call_id"] for row in rows] == ["c1"]
+        assert rows[0]["profile"] == "smart"
+    finally:
+        await again.close()
 
 
 # --------------------------------------------------------------------------

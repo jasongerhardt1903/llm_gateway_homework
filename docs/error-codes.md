@@ -10,6 +10,7 @@
 | `REQUEST_INVALID` | 请求验证 | 参数非法 / Schema 缺失 | 400、404、422 |
 | `PROMPT_INVALID` | Prompt | 缺变量 / 超预算 | Prompt 模板渲染失败 |
 | `ROUTE_NO_CANDIDATE` | 路由 | 无兼容模型 | 全部候选被能力过滤或不可用 |
+| `TOOL_ROUNDS_EXCEEDED` | 请求验证 | 工具调用轮数超过 profile/模型配置的上限 | `Task.tool_rounds() > advanced.max_tool_rounds` |
 | `QUEUE_REJECTED` | 排队 | 并发已满 / 截止时间不足 | 并发槽不足 |
 | `CONN_FAILED` | 连接 | 网络抖动 / 短暂 5xx | 连接被拒、读超时、DNS 失败、408 |
 | `RATE_LIMITED` | 首 Token 前 | 限流 | 429 |
@@ -53,6 +54,7 @@
 | 请求验证 | 参数非法，Schema 缺失 | 否 | `REQUEST_INVALID` | `NEVER` | 立即失败，返回字段路径 |
 | Prompt | 缺变量，超过预算 | 修正请求后重试 | `PROMPT_INVALID` | `RETRY_AFTER_FIX` | 不自动重试，提示修正 |
 | 路由 | 无兼容模型 | 配置变化后重试 | `ROUTE_NO_CANDIDATE` | `RETRY_AFTER_CONFIG` | 不自动重试，提示改配置 |
+| 请求验证 | 工具调用轮数超上限 | 否 | `TOOL_ROUNDS_EXCEEDED` | `NEVER` | 在调用上游之前拒绝，避免为注定被拒的请求付费 |
 | 排队 | 并发已满，截止时间不足 | 可拒绝或换池 | `QUEUE_REJECTED` | `REJECT_OR_SWITCH_POOL` | 拒绝或切池 |
 | 连接 | 网络抖动，短暂 5xx | 有限重试 | `CONN_FAILED` | `LIMITED_RETRY` | 指数退避重试 |
 | 首 Token 前 | 429，超时，过载 | 有限重试或 fall back | `RATE_LIMITED` / `UPSTREAM_OVERLOADED` | `LIMITED_RETRY_OR_FALLBACK` | 退避重试，仍失败则降级备用 |

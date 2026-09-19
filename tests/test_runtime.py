@@ -15,7 +15,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from llm_gw.runtime import create_runtime_app, default_db_path
+from llm_gw.core.messages import Model
+from llm_gw.runtime import _api_key_for, create_runtime_app, default_db_path
 
 
 async def _get(app, path: str) -> httpx.Response:
@@ -89,3 +90,39 @@ async def test_preset_providers_are_available(provider: str, tmp_path) -> None:
     async with app.router.lifespan_context(app):
         providers = (await _get(app, "/api/providers")).json()
     assert provider in {item["provider"] for item in providers}
+
+
+def test_api_key_prefers_console_value_over_env(monkeypatch) -> None:
+    """密钥优先级：控制台录入的模型密钥 > 供应商 preset 约定的环境变量。
+
+    这是"录入的密钥真的会被用上"的装配层证据；请求头里带上它由
+    ``tests/adapter/test_adapter_contract.py`` 断言。
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
+    model = Model(
+        id="gpt-4o-mini",
+        name="GPT-4o Mini",
+        api="openai",
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+    )
+
+    # 未在界面录入 → 回退到环境变量。
+    assert _api_key_for(model) == "sk-from-env"
+
+    # 界面录入后 → 优先用它，环境变量不再参与。
+    model.api_key = "sk-from-console"
+    assert _api_key_for(model) == "sk-from-console"
+
+
+def test_api_key_is_none_when_nothing_configured(monkeypatch) -> None:
+    """两条路径都没有密钥时返回 None，而不是空串（空串会被当成"已配置"）。"""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    model = Model(
+        id="gpt-4o-mini",
+        name="GPT-4o Mini",
+        api="openai",
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+    )
+    assert _api_key_for(model) is None

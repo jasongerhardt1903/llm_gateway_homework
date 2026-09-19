@@ -1,8 +1,8 @@
 # 架构
 
-## 四层结构
+## 五层结构
 
-需求给出的链路是 `LLM —— adapter —— 路由层 —— Harness层 —— service`。本项目按这个链路分层，**依赖只允许从右向左**：
+需求给出的链路是 `LLM —— adapter —— 路由层 —— Harness层 —— service`。本项目按这个链路分层，**依赖只允许从右向左**；需求第 31 行要求的 **gwprofile 层**是路由层的作用域来源，与路由层同级（路由层依赖它，它不反向依赖路由层）：
 
 ```
 后端 agent
@@ -11,8 +11,11 @@
 Harness 层        harness/service.py  harness/storage.py  harness/query.py  harness/sse.py
     │             对外 HTTP 契约、单一终态编码、调用记录落库、Metrics/Trace 查询
     ▼
-路由层            router/registry.py  router/rules.py  router/router.py
-    │             能力注册表、静态/动态路由、主备选择、重试与降级执行
+路由层            router/rules.py  router/router.py
+    │             解析 profile → 静态优先 → 动态筛选 → 主备选择 → 重试与降级执行
+    │
+    ├── gwprofile 层   router/profile.py  router/registry.py
+    │                模型编组、profile 内统一高级配置模版、dynamic/static 路由配置
     ▼
 adapter 层        adapter/base.py  adapter/protocols/*  adapter/presets/*  adapter/structured.py
     │             统一 task ⇄ 供应商协议互译、流式装配、结构化输出校验
@@ -26,22 +29,48 @@ LLM 供应商        OpenAI · DeepSeek · Anthropic
 |---|---|---|
 | `core/` | 无（只有 pydantic / 标准库） | 任何上层 |
 | `adapter/` | `core/`、`harness/sse.py` | 路由层、Harness 服务 |
+| `router/profile.py` | `core/`（含 `core/advanced.py`） | I/O、事件流、Web 层 |
 | `router/` | `core/`、`adapter/base.py`（只依赖 `Adapter` 抽象）、`harness/retry.py` | 具体协议实现、FastAPI |
 | `harness/` | 全部下层 | 具体 Web 框架之外的东西 |
 
-`adapter/factory.py` 是唯一知道"协议标识 → 实现类"映射的地方；`runtime.py` 是唯一知道"运行时这些依赖各是什么"的地方。两者都是**组合根**，其余模块只依赖注入进来的接口。
+`AdvancedConfig` 放在 `core/advanced.py` 而不是 `router/`：`Model` 需要持有它，而 core 不得反向依赖 router。`adapter/factory.py` 是唯一知道"协议标识 → 实现类"映射的地方；`runtime.py` 是唯一知道"运行时这些依赖各是什么"的地方。两者都是**组合根**，其余模块只依赖注入进来的接口。
 
 ## 一次请求的数据流
 
 以流式请求为例（`POST /v1/tasks:stream`）：
 
 1. **Harness 层**：`validate_syntax(raw)` 校验语法（非 JSON → 400），`validate_schema(data)` 校验结构（字段缺失 → 422），得到统一 `Task`。
-2. **路由层**：`route(task)` 从 `task.required_capabilities()` 推导所需能力 → 静态路由优先 → 动态过滤（能力不匹配 / 不可用记入 `rejected`）→ 取前两名为 `primary` / `backup`。产出 `Decision`。
-3. **adapter 层**：`adapter.stream(model, task, opts)` 把统一 task 翻译成供应商请求体（`build_request`），发出 SSE 请求，再用 `StreamAssembler` 把供应商 delta 装配成**统一事件序列**（`start` → `text_start` → `text_delta`* → `text_end` → `usage` → `done`）。
+2. **路由层**：`resolve_profile(task)` 取 `task.profile`，未指定时取 `default`；显式指定了不存在的 profile 属配置错误，`Decision` 直接给出拒绝原因（**不退化**为全局模型池）。`apply_static(profile)` 按 profile 的 `order()` 取候选（静态模式顺序即主备顺序）→ `dynamic_select` 按能力过滤（能力不匹配 / 不可用记入 `rejected`）→ 取前两名为 `primary` / `backup`。产出 `Decision`。
+3. **adapter 层**：`resolve_advanced(primary, profile)` 先算出该模型生效的高级配置（模版判定矩阵，见下），`adapter.stream(model, task, opts)` 把它翻译进供应商请求体（`build_request`），发出 SSE 请求，再用 `StreamAssembler` 把供应商 delta 装配成**统一事件序列**（`start` → `text_start` → `text_delta`* → `text_end` → `usage` → `done`）。
 4. **Harness 层**：`encode_event()` 把统一事件编码成对外 SSE 帧；`done` 额外发 `data: [DONE]`，`error` / `cancelled` **不发**。
-5. **落库**：`GatewayService._record()` 构造 `CallRecord` 写入 SQLite 的 `requests` + `cost_ledger` + `model_health`。
+5. **落库**：`GatewayService._record()` 构造 `CallRecord`（含生效的 `profile` 名）写入 SQLite 的 `requests` + `cost_ledger` + `model_health`。
 
 ## 关键设计决策
+
+### gwprofile 是路由的作用域
+
+需求第 31 行的 gwprofile 定义"包含哪些模型"。本项目把它实现为**路由作用域**：agent 在 task 里指定 profile，路由只在该 profile 声明的模型里选。
+
+| task 的 profile | 行为 |
+|---|---|
+| 指定且存在 | 候选只来自 profile 内模型 |
+| 指定但不存在 | **快速失败**，给出拒绝原因；不退化为全局池（静默扩大候选集会让配置错误变成线上事故） |
+| 未指定 | 走 `default` profile |
+| 一个 profile 都没配 | 退回全局模型池，保证开箱即用 |
+
+### profile 内高级配置的模版判定矩阵
+
+`resolve_advanced(model, profile)` 的四种组合：
+
+| 模版启用 | 勾选"本模型配置优先于模版" | 生效配置 |
+|---|---|---|
+| 否 | — | 模型自身配置 |
+| 是 | 否 | **模版** |
+| 是 | 是 | 模型自身配置 |
+
+模版只作用于**该 profile 内**的模型。`AdvancedConfig` 字段默认 `None` 表示"不发送该参数"，因此"模版留空某字段"会真的把该字段从请求体里去掉，而不是传 0。
+
+请求体优先级：高级配置（模型 / 模版）< task 显式指定 < `extra_body`（调用方最清楚自己要什么）。
 
 ### 统一事件序列 + 单一终态
 
@@ -58,6 +87,10 @@ TTFT 口径：只认**有业务意义的 delta**（`text_delta` / `thinking_delt
 
 两层分开的理由：语法错误说明请求根本不是 JSON；schema 错误可以指出**字段路径**（`input.messages.0.role: ...`），对 agent 自我修正更有用。
 
+### 工具调用轮数护栏
+
+`AdvancedConfig.max_tool_rounds` 是**请求校验护栏**：`Router._attempt()` 在调用上游之前用 `Task.tool_rounds()` 统计工具调用轮数，超限即返回 `TOOL_ROUNDS_EXCEEDED`（`RetryAction.NEVER`）。放在上游调用之前，避免为注定被拒的请求付费。
+
 ### 结构化输出双层保证
 
 1. **请求侧**：带 `response_schema` 时翻译成供应商的 JSON Schema 参数（OpenAI `response_format.json_schema`、Anthropic tool-use 形态）。
@@ -65,12 +98,12 @@ TTFT 口径：只认**有业务意义的 delta**（`text_delta` / `thinking_delt
 3. **流式边界**：delta 阶段用 `parse_streaming_json` 做增量解析（不能等全部 chunk 到齐），但部分 JSON 无法做 Schema 校验，因此**终校验只在流结束后做一次**。
 4. **修复有界**：`validate_with_repair(..., max_attempts=2)`，超限抛 `OUTPUT_SCHEMA_INVALID`，绝不静默吞掉。
 
-### 路由：静态优先于动态，主备始终保留
+### 路由：profile 定作用域，静态优先于动态
 
-`apply_static` → `dynamic_select` → `build_primary_backup`。
+`resolve_profile` → `apply_static` → `dynamic_select` → `build_primary_backup`。
 
-- 命中静态路由时 `pinned=True`，**动态打分不得改写顺序**——那是运维显式指定的主备顺序。
-- 未命中时按 `(消费比, 输入单价, 标签)` 排序，消费比低者优先。
+- `profile.is_pinned()`（`route_mode == "static"` 且 `static_order` 非空）为真时 `pinned=True`，**动态打分不得改写顺序**——那是运维显式指定的主备顺序。顺序中的标签若全部无效（模型已被删），退化为动态选择而不是报错。
+- 未固定顺序时按 `(消费比, 输入单价, 标签)` 排序，消费比低者优先。
 - `Decision.rejected` 逐条记录被拒模型与原因。路由"为什么选它"和"为什么不选它"同样重要。
 
 ### 流式不做跨模型降级
@@ -87,15 +120,21 @@ Metrics / Logs / Trace 不是三套系统，而是同一份 `requests` 表的三
 | Trace | 按 `trace_id` 串联 | `storage.trace(trace_id)` |
 | Metrics | 按时间窗聚合 | `storage.qps/error_rate/p99_latency/total_cost` |
 
-`CallRecord.to_dict()` 同时输出顶层可索引的标量列（便于 SQL 聚合建索引）与嵌套结构（便于 Web 直接渲染）。
+`CallRecord.to_dict()` 同时输出顶层可索引的标量列（便于 SQL 聚合建索引）与嵌套结构（便于 Web 直接渲染）。记录里的路由维度是 `profile` 名。
 
 ### 可注入时钟
 
 所有等待都走 `Clock` 协议。`FakeClock` 记录 `sleeps: list[float]` 并立即返回，因此**重试测试零真实等待**，断言的是退避序列本身而不是"跑得快"。窗口类指标同理：`Storage` 的时间来自注入的 `now` 函数，测试可以精确驱动时间窗。
 
-### 密钥不落在 Model 上
+### 密钥可落库，但不回显、不进日志
 
-`Model` 是纯描述（id / 协议 / baseUrl / 价格 / 能力），密钥通过 `AdapterOptions.api_key` 调用级传入，来源是 preset 约定的环境变量（`OPENAI_API_KEY` 等）。这样模型配置可以自由落库、回显到控制台、写进日志，都不会泄漏密钥。`CallRecord` 落库前还会过一次 `redact_text` / `redact_mapping` 兜底。
+需求第 30 行允许"API key 可以在 Web 界面配置"，因此 `Model.api_key` 会写进 SQLite。为此做了三件事：
+
+1. **不回显**：`model_to_payload` 一律把 `api_key` 置为 `None`，只回显 `api_key_set: bool`；`api_key=None` 表示"不修改"，空串才表示"清除"。
+2. **不进日志 / Trace**：`redact_mapping` / `redact_text` 的敏感键标记包含 `apikey` / `authorization` / `token` / `secret` / `password`，`api_key` 命中即掩码。
+3. **不进仓库**：`.gitignore` 排除 `llm_gw.sqlite3` 与 `.env`——密钥进数据库与 git init 叠加会直接泄漏。
+
+取值优先级：**模型密钥 > 供应商 preset 约定的环境变量**（`OPENAI_API_KEY` 等），后者便于容器化部署时不必把密钥写进数据库。
 
 ### DeepSeek 是 preset 而不是独立协议
 
@@ -106,17 +145,17 @@ DeepSeek 官方 API 就是 OpenAI 兼容协议（参考实现 `pi` 里的 `deeps
 ```
 llm_gw/
   runtime.py              组合根（唯一的进程装配点，uvicorn 入口）
-  core/                   schema.py messages.py events.py errors.py telemetry.py json_utils.py
+  core/                   schema.py messages.py advanced.py events.py errors.py telemetry.py json_utils.py
   adapter/                base.py transform.py structured.py factory.py
     protocols/            openai_compat.py anthropic_messages.py
     presets/              openai.py deepseek.py anthropic.py registry.py
-  router/                 registry.py rules.py router.py
+  router/                 profile.py registry.py rules.py router.py
   harness/                service.py retry.py decisions.py storage.py query.py sse.py
   util/                   clock.py
   web/                    app.py api_models.py
 webapp/                   React + Vite 控制台
 tests/                    core/ adapter/ router/ harness/ web/ support/
-docs/                     architecture.md interface.md error-codes.md retry-strategy.md
+docs/                     architecture.md interface.md error-codes.md retry-strategy.md test-evidence.md
 ```
 
 ## 控制台与 agent API 的关系
@@ -130,4 +169,4 @@ docs/                     architecture.md interface.md error-codes.md retry-stra
 | 请求体 | 统一 `Task` | 控制台专用模型（`ChatRequest` 等） |
 | 面向 | 程序 | 人 |
 
-`web/app.py` 额外提供模型 CRUD、路由配置、Dashboard 聚合与 Trace 搜索——这些 agent 不需要。`runtime.py` 把两者装配到同一个进程：外层 app 只负责生命周期（启动时 `storage.init()` + `restore_config()`，关闭时释放 httpx 连接池与数据库连接），控制台应用按根路径挂载。
+`web/app.py` 额外提供模型 CRUD、gwprofile 配置、Dashboard 聚合与 Trace 搜索——这些 agent 不需要。`runtime.py` 把两者装配到同一个进程：外层 app 只负责生命周期（启动时 `storage.init()` + `restore_config()`，关闭时释放 httpx 连接池与数据库连接），控制台应用按根路径挂载。

@@ -13,6 +13,8 @@
 
 三者不叠加使用：连接层负责"这一次 HTTP 请求要不要再发一遍"，语义层负责"这一次模型调用要不要再来一次"，路由层负责"换一个模型试试"。
 
+**重试策略按 profile 取值**：`Router.policy_for(profile)` 返回 `RetryPolicy(enabled=profile.retry_enabled, max_retries=profile.max_retries)`；没有 profile（未配置任何 profile，走全局模型池）时用 router 的默认策略。因此同一个模型可以挂在"允许重试 3 次"与"不重试"两个 profile 下，行为不同。
+
 ## 2. 退避公式
 
 ```
@@ -22,8 +24,8 @@ delay(attempt) ×= 1 + jitter_ratio × (2·random() - 1)     # ±25% 抖动
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `enabled` | `true` | 可由 Web 界面配置 |
-| `max_retries` | `3` | **可由 Web 界面配置**（0–10），需求规定默认 3 |
+| `enabled` | `true` | **per-profile** 可配（`profile.retry_enabled`） |
+| `max_retries` | `3` | **per-profile** 可配（`profile.max_retries`，0–10），需求规定默认 3 |
 | `base_delay_ms` | `500` | 退避基数 |
 | `max_delay_ms` | `60000` | 单次退避上限 |
 | `jitter_ratio` | `0.25` | 抖动比例；测试设为 0 以断言精确序列 |
@@ -162,11 +164,14 @@ if message.stop_reason == "error" and is_retryable_assistant_error(message):
 
 ## 8. 配置入口
 
-最大重试次数与是否启用重试在 Web 界面的「模型定义 → 路由配置」中设置：
+重试开关与最大次数是 **gwprofile 的字段**，在 Web 界面的「Profile」页配置：
 
 ```
-GET  /api/routes   →  {"routes": [...], "retry_enabled": true, "max_retries": 3}
-PUT  /api/routes   →  同结构，写库并立即对后续请求生效
+GET  /api/profiles          →  [{..., "retry_enabled": true, "max_retries": 3}, ...]
+POST /api/profiles          →  同结构，写库并立即对后续请求生效
+PUT  /api/profiles/{name}   →  同结构，写库并立即对后续请求生效
 ```
 
-配置通过 `Storage` 的 `config` 表持久化，进程重启后由 `restore_config()` 恢复。
+task 里指定 `profile` 时用该 profile 的重试策略；未指定时用 `default` profile；一个 profile 都没配时用 router 默认策略。配置通过 `Storage` 的 `config` 表持久化，进程重启后由 `restore_config()` 恢复。
+
+此外 `advanced.max_tool_rounds` 是**请求级护栏**（不属于重试策略）：工具调用轮数超限返回 `TOOL_ROUNDS_EXCEEDED`，`RetryAction.NEVER`，在调用上游之前生效。

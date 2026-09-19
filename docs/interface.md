@@ -7,7 +7,7 @@ agent 与网关之间的唯一请求形态。定义在 `core/schema.py`，两层
 ```jsonc
 {
   "task_id": "req-2026-0919-0001",     // 必填，调用方自带，便于幂等与链路追踪
-  "logical_model": "default",          // 可选，逻辑模型名；为空时走默认路由
+  "profile": "default",                // 可选，gwprofile 名；为空时走 default profile
   "input": {
     "messages": [                      // 必填，至少 1 条
       { "role": "user", "content": "你好" }
@@ -179,8 +179,10 @@ data: [DONE]
 | POST | `/api/models` | 新增模型 |
 | PUT | `/api/models/{provider}/{model_id}` | 修改模型（改 id/provider 时先移除旧标签，不留孤儿条目） |
 | DELETE | `/api/models/{provider}/{model_id}` | 删除模型 |
-| GET | `/api/routes` | 静态路由 + 重试配置 |
-| PUT | `/api/routes` | 保存静态路由 + 重试配置 |
+| GET | `/api/profiles` | gwprofile 清单 |
+| POST | `/api/profiles` | 新增 gwprofile |
+| PUT | `/api/profiles/{name}` | 修改 gwprofile |
+| DELETE | `/api/profiles/{name}` | 删除 gwprofile |
 | GET | `/api/dashboard` | 聚合指标 + 各模型状态表 |
 | GET | `/api/traces?q=&limit=` | 关键字搜索调用记录（空 `q` 返回最近记录） |
 | GET | `/api/traces/{trace_id}` | 按 `trace_id` 取整条链路 |
@@ -188,21 +190,60 @@ data: [DONE]
 | POST | `/api/chat` | Chat 页的非流式版本 |
 | POST | `/api/tasks:validate` | 用两层校验试跑一个原始 task（调试用） |
 
-模型清单与路由配置通过 `Storage` 的 `config` 表持久化，进程重启后由 `restore_config()` 恢复。
+模型清单与 gwprofile 通过 `Storage` 的 `config` 表持久化，进程重启后由 `restore_config()` 恢复。
 
-### `PUT /api/routes`
+### `GET /api/profiles` / `POST /api/profiles`
 
 ```jsonc
 {
-  "routes": [
-    { "logical_model": "default", "candidates": ["openai/gpt-4o-mini", "deepseek/deepseek-chat"] }
+  "name": "prod",                  // 必填
+  "display_name": "生产",          // 可选
+  "models": [                      // 必填，至少 1 个
+    { "label": "gpt-4o-mini", "prefer_own_config": false }
   ],
+  "template_enabled": false,       // 可选，默认 false
+  "template": {                    // 可选，profile 内统一高级配置模版
+    "temperature": 0.7, "top_p": null, "top_k": null,
+    "thinking_mode": "default", "max_tool_rounds": null, "max_tokens": null
+  },
+  "route_mode": "dynamic",         // dynamic | static，默认 dynamic
+  "static_order": "",              // static 时用逗号分隔写死优先顺序（支持全角/顿号）
   "retry_enabled": true,
-  "max_retries": 3        // 0–10，需求默认 3
+  "max_retries": 3                 // 0–10，per-profile 重试上限
 }
 ```
 
-`candidates` 的顺序即主备顺序，**静态路由优先于动态路由**，顺序不会被动态打分改写。
+- `models[].label` 引用模型（`provider/id` 或别名）；勾选 `prefer_own_config` 表示该模型在本 profile 内忽略模版、用自己的高级配置。
+- 模版判定矩阵：启用 + 未勾选 `prefer_own_config` → 用模版；启用 + 勾选 → 用模型自身配置；未启用 → 用模型自身配置。
+- `route_mode == "static"` 且 `static_order` 非空时 `is_pinned()` 为真，动态打分不得改写顺序；顺序中标签全部无效则退化为动态选择。
+- 删除 profile 时，引用它的旧调用记录里仍保留当时生效的 `profile` 名（作废的引用会自动跳过被删模型）。
+
+### 模型 payload 与高级配置、密钥
+
+`GET /api/models` 返回每条模型：
+
+```jsonc
+{
+  "provider": "openai", "id": "gpt-4o-mini", "name": "GPT-4o Mini", "api": "openai",
+  "base_url": "...", "context_window": 128000, "max_tokens": 16384,
+  "capabilities": { "sse": true, "streaming": true, "tools": true, "json_schema": true, "vision": true, "reasoning": false },
+  "cost": { "input": 0.00015, "output": 0.0006, "cache_read": 0, "cache_write": 0 },
+  "tag": "",                               // 模型 tag
+  "advanced": {                            // 高级配置项；null 表示请求时不发送该参数
+    "temperature": null, "top_p": null, "top_k": null,
+    "thinking_mode": "default", "max_tool_rounds": null, "max_tokens": null
+  },
+  "api_key_set": false,                    // 只读；是否已配置密钥
+  "api_key": null                          // 只写不回显，恒为 null；见下
+}
+```
+
+密钥约定：
+
+- `POST/PUT /api/models` 里 `api_key` 缺省表示**不修改**已有密钥，传空串表示**清除**。
+- 响应里的 `api_key` 恒为 `null`，只回显 `api_key_set` 布尔量——密钥绝不回显给控制台。
+- 实际调用时的取值优先级：模型密钥 > 供应商 preset 约定的环境变量，见 README。
+- `advanced.max_tool_rounds` 是工具调用轮数护栏，超限即返回 `TOOL_ROUNDS_EXCEEDED`（`RetryAction.NEVER`）。
 
 ### `GET /api/dashboard`
 
@@ -234,7 +275,7 @@ data: [DONE]
 {
   "trace_id": "chat-chat-0fcc9f54c857", "run_id": "", "step_id": "", "call_id": "call-f4676a1dced6",
   "prompt_name": "", "prompt_version": "", "prompt_sha256": "3f2a...", "prompt_schema_version": "",
-  "logical_model": "", "provider": "openai", "model": "gpt-4o-mini", "api": "openai-completions",
+  "profile": "", "provider": "openai", "model": "gpt-4o-mini", "api": "openai-completions",
   "usage": { "input": 12, "output": 9, "cache_read": 0, "cache_write": 0, "reasoning": null, "total_tokens": 21 },
   "ttft_ms": 412.5, "generation_ms": 1103.2, "total_ms": 1515.7,
   "queue_ms": 0.0, "route_ms": 0.0, "latency": { /* 同上，嵌套一份 */ },
@@ -255,14 +296,16 @@ data: [DONE]
 ## 5. 启动
 
 ```bash
-# 控制台 + agent API（同一进程）
-uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
+# 控制台 + agent API（同一进程）；推荐直接用 ./run.sh（会自动激活 venv 并加载 .env）
+./run.sh
+.venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
 
 # 环境变量
 export OPENAI_API_KEY=sk-...
 export DEEPSEEK_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
 export LLM_GW_DB=/path/to/llm_gw.sqlite3   # 可选，默认 ./llm_gw.sqlite3
+export LLM_GW_HOST=0.0.0.0                 # 可选，局域网访问
 ```
 
 前端开发模式：
@@ -272,4 +315,4 @@ cd webapp && npm install && npm run dev    # http://localhost:5173，/api 代理
 cd webapp && npm run build                 # 产物到 webapp/dist，由 FastAPI 同源托管
 ```
 
-密钥只从环境变量读取（preset 约定的 `env_key`），不落库、不回显到控制台。
+密钥可来自环境变量（preset 约定的 `env_key`），也可在控制台模型页录入。录入的值写入 SQLite 但**不回显**（只显示"已配置/未配置"），优先级高于环境变量；`.gitignore` 已排除 `llm_gw.sqlite3` 与 `.env`。
