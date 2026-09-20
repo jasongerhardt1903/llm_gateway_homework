@@ -71,7 +71,11 @@ def create_runtime_app(*, db_path: str | None = None) -> FastAPI:
         retry_policy=RetryPolicy(),
     )
     service = GatewayService(router, storage)
-    console = create_web_app(service, registry=registry, storage=storage)
+    # 控制台也要查上游（供应商模型清单、模型连接测试），因此把同一个连接池与
+    # 同一套密钥解析策略注入进去，避免控制台另建一份、两处口径漂移。
+    console = create_web_app(
+        service, registry=registry, storage=storage, client=client, api_key_for=_api_key_for
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):

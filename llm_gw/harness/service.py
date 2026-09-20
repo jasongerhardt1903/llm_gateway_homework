@@ -19,7 +19,7 @@
 以 ``Authorization: Bearer <password>`` 提交；未配置口令时不强制。``/health``
 与控制台 ``/api/*`` 不在保护范围内。
 
-版本：0.7.0
+版本：0.8.0
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .. import __version__
 from ..core.errors import ErrorCode
 from ..core.events import AssistantEvent
 from ..core.messages import AssistantMessage
@@ -366,6 +367,6 @@ def create_app(service: GatewayService) -> FastAPI:
     真实进程走的是 ``runtime.create_runtime_app``——它在同一份路由表之外
     还挂载了控制台。
     """
-    app = FastAPI(title="LLM Gateway", version="0.7.0")
+    app = FastAPI(title="LLM Gateway", version=__version__)
     app.include_router(agent_router(service))
     return app

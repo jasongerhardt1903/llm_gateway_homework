@@ -17,6 +17,21 @@ describe("控制台冒烟", () => {
     expect(html).toContain("模型清单");
     expect(html).toContain("高级配置");
   });
+
+  it("侧边栏提供版本号与更新日志入口（需求第 6 条）", () => {
+    // 版本号本身来自 /api/meta（静态渲染时还没有），因此这里只验证入口存在。
+    const html = renderToStaticMarkup(<App />);
+    expect(html).toContain("版本");
+    expect(html).toContain("更新日志");
+  });
+
+  it("协议下拉的值是 adapter 的协议 ID", () => {
+    // 选项值必须与后端 create_adapter 认识的协议名一致，否则手改一次协议
+    // 就会让模型（含"测试连接"）以"未知的 API 协议"失败。
+    const html = renderToStaticMarkup(<App />);
+    expect(html).toContain('value="openai-completions"');
+    expect(html).toContain('value="anthropic-messages"');
+  });
 });
 
 describe("Trace 任务瀑布图", () => {

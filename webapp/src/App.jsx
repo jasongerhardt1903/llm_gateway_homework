@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Activity,
   Boxes,
@@ -12,6 +12,7 @@ import ProfilesPage from "./pages/ProfilesPage.jsx";
 import ChatPage from "./pages/ChatPage.jsx";
 import DashboardPage from "./pages/DashboardPage.jsx";
 import TracePage from "./pages/TracePage.jsx";
+import { getMeta } from "./api.js";
 import { cn } from "./lib/utils.js";
 
 /** 导航与需求中"业务与交互层"的功能一一对应；文案与既有版本保持一致。 */
@@ -25,8 +26,18 @@ const TABS = [
 
 export default function App() {
   const [active, setActive] = useState("models");
+  // 版本号与更新日志（需求"管理与交互层"第 6 条）。拉取失败不影响页面其他功能，
+  // 因此只把 meta 留空，由界面显示"—"。
+  const [meta, setMeta] = useState(null);
+  const [showLog, setShowLog] = useState(false);
   const current = TABS.find((tab) => tab.key === active) ?? TABS[0];
   const Page = current.component;
+
+  useEffect(() => {
+    getMeta()
+      .then(setMeta)
+      .catch(() => setMeta(null));
+  }, []);
 
   return (
     <div className="flex min-h-screen bg-bg">
@@ -64,6 +75,27 @@ export default function App() {
         </nav>
         <div className="mt-auto px-2 text-xs text-faint">
           模型定义 · Profile · Chat · Dashboard · Trace
+        </div>
+
+        <div className="mt-3 border-t border-border px-2 pt-3 text-xs">
+          <button
+            type="button"
+            onClick={() => setShowLog((value) => !value)}
+            aria-expanded={showLog}
+            className={cn(
+              "w-full cursor-pointer rounded-md border border-transparent px-1.5 py-1 text-left",
+              "text-faint transition-colors hover:bg-hover hover:text-fg2",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-hover"
+            )}
+          >
+            版本 {meta?.version ?? "—"}
+            <span className="ml-1">· 更新日志{showLog ? " ▲" : " ▼"}</span>
+          </button>
+          {showLog && (
+            <pre className="mt-2 max-h-[280px] overflow-auto whitespace-pre-wrap rounded-md border border-border bg-panel p-2 text-[11px] leading-relaxed text-fg2">
+              {meta?.changelog || "暂无更新日志"}
+            </pre>
+          )}
         </div>
       </aside>
 

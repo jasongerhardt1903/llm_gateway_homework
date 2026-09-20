@@ -33,6 +33,15 @@ async function read_error(response) {
 }
 
 export const listProviders = () => request("/providers");
+/**
+ * 供应商可选模型与其能力（需求"模型管理层"第 1 条）。
+ *
+ * 返回 ``{source, error, models, advanced}``：``source`` 为 ``upstream`` 表示
+ * 清单来自供应商实时查询，``preset`` 表示上游不可用、已退回内置清单，此时
+ * ``error`` 会说明原因，界面需要如实提示而不是假装一切正常。
+ */
+export const listProviderModels = (provider) =>
+  request(`/providers/${encodeURIComponent(provider)}/models`);
 export const listModels = () => request("/models");
 export const createModel = (payload) =>
   request("/models", { method: "POST", body: JSON.stringify(payload) });
@@ -45,6 +54,19 @@ export const deleteModel = (provider, modelId) =>
   request(`/models/${encodeURIComponent(provider)}/${encodeURIComponent(modelId)}`, {
     method: "DELETE",
   });
+
+/**
+ * 模型连接测试（需求"模型管理层"第 2 条）。
+ *
+ * 请求体与新增/编辑模型一致，因此尚未保存的模型也能先测再存。上游失败属于
+ * 测试结论而非控制台故障，后端因此返回 200 + ``ok=false``；这里只把请求体
+ * 本身不合法（422）当作异常抛出。
+ */
+export const testModel = (payload) =>
+  request("/models:test", { method: "POST", body: JSON.stringify(payload) });
+
+/** 当前版本号与更新日志（需求"管理与交互层"第 6 条）。 */
+export const getMeta = () => request("/meta");
 
 // gwprofile（需求第 31 行）
 export const listProfiles = () => request("/profiles");

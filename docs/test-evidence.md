@@ -1,6 +1,12 @@
 # 测试证据
 
-> 本文件是 **v0.7.0** 的存档。v0.7.0 为 agent 接口（`/v1/tasks`、`/v1/tasks:stream`）
+> 本文件是 **v0.8.0** 的存档。v0.8.0 落实需求"模型管理层"第 1、2 条与"管理与交互层"
+> 第 6 条：模型配置改为**向供应商实时查询**（可选模型清单 + 能力 + 高级配置项）、
+> **高级配置项逐项可开关且互斥项自动互斥**、新增**模型连接测试**与**页面版本号/更新日志**；
+> 后端用例由 351 增至 **367**（新增 `tests/web/test_model_discovery.py` 16 例），覆盖率 92%；
+> 前端用例由 8 增至 **15**（`webapp/src/__tests__/smoke.test.jsx` +2、
+> 新增 `model-catalog.test.js` 5 例）。
+> v0.7.0 为 agent 接口（`/v1/tasks`、`/v1/tasks:stream`）
 > 加上简单口令鉴权，并新增 `AUTH_REQUIRED` 错误码；后端用例由 343 增至 **351**
 > （`tests/harness/test_agent_auth.py` +7、`tests/test_runtime.py` +1），覆盖率 92%。
 > v0.6.0 把 agent API（`/health`、`/v1/tasks`、`/v1/tasks:stream`）
@@ -24,11 +30,12 @@ $ .venv/bin/python -m pytest tests -p no:cacheprovider --cov=llm_gw --cov-report
 ```
 
 ```
-........................................................................ [ 21%]
-........................................................................ [ 42%]
-........................................................................ [ 63%]
-........................................................................ [ 84%]
-......................................................                   [100%]
+........................................................................ [ 19%]
+........................................................................ [ 39%]
+........................................................................ [ 58%]
+........................................................................ [ 78%]
+........................................................................ [ 98%]
+.......                                                                  [100%]
 ================================ tests coverage ================================
 _______________ coverage: platform darwin, python 3.13.9-final-0 _______________
 
@@ -37,12 +44,13 @@ Name                                             Stmts   Miss  Cover   Missing
 llm_gw/__init__.py                                   1      0   100%
 llm_gw/adapter/__init__.py                           0      0   100%
 llm_gw/adapter/base.py                             311     28    91%   146, 175, 178, 187, 204, 210, 212, 226, 267, 269, 271, 295, 307, 334, 359, 486, 507-513, 552, 558-561
+llm_gw/adapter/discovery.py                         84      6    93%   181-182, 229-230, 243, 247
 llm_gw/adapter/factory.py                           14      0   100%
 llm_gw/adapter/presets/__init__.py                   0      0   100%
 llm_gw/adapter/presets/anthropic.py                  8      0   100%
 llm_gw/adapter/presets/deepseek.py                   8      0   100%
 llm_gw/adapter/presets/openai.py                     8      0   100%
-llm_gw/adapter/presets/registry.py                  39      3    92%   51, 65, 69
+llm_gw/adapter/presets/registry.py                  39      2    95%   51, 65
 llm_gw/adapter/protocols/__init__.py                 0      0   100%
 llm_gw/adapter/protocols/anthropic_messages.py     181     20    89%   164, 175, 189-190, 192, 248-249, 256, 258-259, 295, 306, 319-325, 331
 llm_gw/adapter/protocols/openai_compat.py          169     12    93%   133-134, 159, 203-205, 211, 236-237, 289, 293-294
@@ -50,7 +58,7 @@ llm_gw/adapter/structured.py                       134     25    81%   55-61, 12
 llm_gw/adapter/transform.py                         80      7    91%   81, 117-121, 136
 llm_gw/core/__init__.py                              0      0   100%
 llm_gw/core/advanced.py                             35      3    91%   55, 77-78
-llm_gw/core/errors.py                              251     38    85%   200, 252-253, 273-275, 285-286, 294, 298, 302-306, 348-350, 353, 367-368, 379, 398, 402, 415, 427-428, 494, 501, 503, 507, 510-511, 516-519, 553, 579
+llm_gw/core/errors.py                              252     36    86%   209, 261-262, 282-284, 294-295, 303, 307, 311-315, 358, 362, 376-377, 388, 407, 411, 424, 436-437, 503, 510, 512, 516, 519-520, 525-528, 562, 588
 llm_gw/core/events.py                              155      7    95%   207, 244-245, 285, 292, 302, 315
 llm_gw/core/json_utils.py                          191     14    93%   45, 141-142, 145, 184-185, 188, 197, 263-264, 267, 279, 289, 306
 llm_gw/core/messages.py                            124      2    98%   192, 194
@@ -60,7 +68,7 @@ llm_gw/harness/__init__.py                           0      0   100%
 llm_gw/harness/decisions.py                         14      1    93%   53
 llm_gw/harness/query.py                             20      0   100%
 llm_gw/harness/retry.py                            128     18    86%   98-99, 104-114, 136, 145, 147, 174, 207
-llm_gw/harness/service.py                          115      6    95%   193-197, 229
+llm_gw/harness/service.py                          128      6    95%   208-212, 244
 llm_gw/harness/sse.py                               80      8    90%   97-103, 126
 llm_gw/harness/storage.py                          133      7    95%   134, 161, 164, 168, 269, 334, 398
 llm_gw/router/__init__.py                            0      0   100%
@@ -68,21 +76,28 @@ llm_gw/router/profile.py                            68      4    94%   79, 104, 
 llm_gw/router/registry.py                           60      3    95%   75, 91, 111
 llm_gw/router/router.py                            120     13    89%   106, 110-112, 136, 141-142, 166, 179, 210, 244, 248-249
 llm_gw/router/rules.py                              75      0   100%
-llm_gw/runtime.py                                   49      1    98%   108
+llm_gw/runtime.py                                   49      1    98%   112
 llm_gw/util/__init__.py                              0      0   100%
 llm_gw/util/clock.py                                22      3    86%   31, 34-35
 llm_gw/web/__init__.py                               0      0   100%
 llm_gw/web/api_models.py                            93      1    99%   142
-llm_gw/web/app.py                                  182     19    90%   88, 126, 129-130, 150, 161, 169, 209-210, 247, 255, 303, 305, 307, 309, 311, 313, 324, 331
+llm_gw/web/app.py                                  236     26    89%   127, 163, 194, 197-198, 218, 229, 237, 277-278, 323-324, 338, 347, 359-360, 365, 373, 421, 423, 425, 427, 429, 431, 442, 449
 ------------------------------------------------------------------------------
-TOTAL                                             3040    249    92%
-343 passed in 1.41s
+TOTAL                                             3192    259    92%
+367 passed in 1.55s
 ```
 
-**343 passed，0 failed，92% 覆盖率。**
+**367 passed，0 failed，92% 覆盖率。**
 
-本轮改动的模块覆盖率：`core/telemetry.py` 100%、`harness/decisions.py` 93%、
-`router/router.py` 89%、`harness/service.py` 95%、`core/errors.py` 85%。
+本轮改动的模块覆盖率：新增的 `adapter/discovery.py` 93%、`web/app.py` 89%、
+`core/telemetry.py` 100%、`harness/decisions.py` 93%、`router/router.py` 89%、
+`harness/service.py` 95%、`core/errors.py` 86%。
+
+`discovery.py` 未覆盖的 6 行（181-182、229-230、243、247）都是错误兜底分支：
+上游返回非 JSON、缺 `data` 数组、以及通用异常——这些分支的目标行为是"回退到内置
+preset 清单并如实回报 `error`"，已由 `test_provider_models_falls_back_to_preset`
+（HTTP 500）与 `test_provider_models_reports_unparsable_response`（非 JSON / 缺
+`data`）覆盖同一批错误路径，未再为每个错误子类型各写一例。
 
 ## 2. 按文件分布
 
@@ -98,17 +113,19 @@ TOTAL                                             3040    249    92%
 | `tests/core/test_json_utils.py` | 15 | |
 | `tests/core/test_messages.py` | 7 | |
 | `tests/core/test_schema.py` | 15 | |
-| `tests/core/test_telemetry.py` | 5 | +`disposition` 断言 |
-| `tests/harness/test_observability.py` | 17 | +`disposition` 断言 |
-| `tests/harness/test_service.py` | 14 | **+3（认证降级落库 / warnings / 成功无处置）** |
+| `tests/core/test_telemetry.py` | 5 | |
+| `tests/harness/test_agent_auth.py` | 7 | v0.7.0：agent 接口口令鉴权 |
+| `tests/harness/test_observability.py` | 17 | |
+| `tests/harness/test_service.py` | 14 | |
 | `tests/router/test_profile.py` | 29 | |
 | `tests/router/test_profile_routing.py` | 24 | |
 | `tests/router/test_retry.py` | 21 | |
-| `tests/router/test_router.py` | 20 | **+3（三选一决策表与降级链）** |
+| `tests/router/test_router.py` | 20 | |
+| `tests/web/test_model_discovery.py` | 16 | **+16（v0.8.0 新增：模型发现与连接测试）** |
 | `tests/web/test_web_api.py` | 28 | |
 | `tests/test_phase0_infra.py` | 4 | |
-| `tests/test_runtime.py` | 10 | **+1（agent API 与控制台同进程共存）** |
-| **合计** | **343** | **+1** |
+| `tests/test_runtime.py` | 11 | v0.7.0：agent API 与控制台同进程共存 |
+| **合计** | **367** | **+16** |
 
 ## 3. 需求要求的六类测试
 
@@ -132,6 +149,7 @@ TOTAL                                             3040    249    92%
 | `tests/harness/test_service.py` | 客户端断连取消上游、流内 error 不发 `[DONE]`、已流式输出后不盲目重生成、认证失败降级不阻塞且落库、`warnings` 随响应返回 |
 | `tests/core/test_events.py` | 单一终态不变式、`end` 后 push 丢弃 |
 | `tests/web/test_web_api.py` | 模型 CRUD、**密钥只写不回显 / 缺省不修改 / 空串清除**、profile CRUD 往返、Dashboard、Trace 搜索、Chat SSE 代理 |
+| `tests/web/test_model_discovery.py` | v0.8.0 模型管理层：高级配置项按协议声明差异（OpenAI 不含 `top_k`）、思考模式互斥项、`auth_headers` 逐协议、上游模型清单优先于 preset 与降级、未知型号标记 `known=false` 且不编造能力、Provider 级查询复用已保存密钥、未知供应商 404、**连接测试的最小请求（`max_tokens=1` / `stream=False` / `Bearer`）**、401 → `AUTH_INVALID`、连不上 → `CONN_FAILED`、`/api/meta` 版本与更新日志 |
 | `tests/test_runtime.py` | 组合根：lifespan 挂载、配置跨重启恢复、根挂载不吞 404、**agent API 与控制台同进程共存**、**密钥优先级（模型 > 环境变量）** |
 | `tests/test_phase0_infra.py` | `FakeClock` 不等待、`sse_transport` 重放分片、`scripted_transport` 按序返回错误 |
 
@@ -145,7 +163,7 @@ async def test_retries_transient_error_with_backoff(clock):
     assert clock.sleeps == [500, 1000]
 ```
 
-整个 `tests/router/test_retry.py`（21 个用例，含"重试 3 次""退避封顶""退避期间取消"）与全量 342 个用例一起在 **1.32 秒**内跑完——若存在真实退避等待，仅退避序列 `500+1000+2000` 就会超过 3.5 秒。
+整个 `tests/router/test_retry.py`（21 个用例，含"重试 3 次""退避封顶""退避期间取消"）与当时全量 342 个用例一起在 **1.32 秒**内跑完——若存在真实退避等待，仅退避序列 `500+1000+2000` 就会超过 3.5 秒。
 
 窗口类指标同理：`Storage(now=...)` 的时间来自注入函数，`tests/harness/test_observability.py` 用 `now.value - 120` 精确构造"2 分钟前的记录"，不依赖 `time.sleep`。
 
@@ -158,10 +176,11 @@ $ cd webapp && npm test
 ```
  RUN  v2.1.9 webapp
 
- ✓ src/__tests__/smoke.test.jsx (8 tests) 8ms
+ ✓ src/__tests__/model-catalog.test.js (5 tests) 2ms
+ ✓ src/__tests__/smoke.test.jsx (10 tests) 19ms
 
- Test Files  1 passed (1)
-      Tests  8 passed (8)
+ Test Files  2 passed (2)
+      Tests  15 passed (15)
 ```
 
 覆盖：五个页签渲染（含 Profile 页）、默认页、SSE 事件解析（含**事件被拆到两个网络分片**的场景）、`[DONE]` 不作为业务事件透出、`error` 终态仍交付、HTTP 错误抛出后端 `detail`；以及 v0.4.0 新增的任务瀑布图三例——按 `run_id` 分组（空值归入「未标记任务」、组内时间正序且不改动入参）、条宽相对全局最长调用与 TTFT 占比（含 `total_ms=0` 的最小宽度与除零保护）、分组渲染的汇总文案与终态配色。
@@ -169,14 +188,32 @@ $ cd webapp && npm test
 v0.5.0 的 UI 重做**没有改动测试文件**：瀑布图的 `.waterfall-bar` / `.waterfall-ok|bad|warn`
 与 `.row-selected` 类名在 Tailwind 组件层里被原样保留，因此这三例继续作为"语义契约"生效。
 
+v0.8.0 新增 7 例（前 8 例**断言未做任何修改**，继续通过）：
+
+| 用例 | 断言要点 |
+|---|---|
+| `smoke.test.jsx`「侧边栏提供版本号与更新日志入口」 | 静态渲染即出现「版本」「更新日志」（版本号本身来自 `/api/meta`，静态渲染时还没有，故只验证入口） |
+| `smoke.test.jsx`「协议下拉的值是 adapter 的协议 ID」 | 页面里必须出现 `value="openai-completions"` / `value="anthropic-messages"` |
+| `model-catalog.test.js` × 5 | 见下 |
+
+`model-catalog.test.js` 覆盖 v0.8.0 新抽出的纯函数（无 DOM，可直接断言）：
+
+| 用例 | 断言要点 |
+|---|---|
+| `initial_enabled` | 已配置的项（含值为 `0`）视为已勾选，`null`/缺省视为未勾选 |
+| `toggle_item` 清空 | 取消勾选时把输入框清空，避免看不见的值被提交（`0` 是合法取值，不能当"未配置"） |
+| `build_advanced` | 未勾选的数值项在提交体里是 `null`；`thinking_mode` 这类选择项不受勾选状态影响 |
+| `toggle_choice` 互斥 | 选中一个值即覆盖同字段的另一个值；再点一次回到 `"default"` |
+| 兜底清单结构 | catalog 拉取失败时用的 `DEFAULT_ADVANCED_ITEMS` 结构完整（每项有 `key`/`label`/`kind`） |
+
 构建产物同样验证过：
 
 ```bash
 $ cd webapp && npm run build
 dist/index.html                   0.40 kB │ gzip:   0.29 kB
-dist/assets/index-Dgw8S1gS.css   20.63 kB │ gzip:   5.10 kB
-dist/assets/index-DzaioPZR.js   658.09 kB │ gzip: 195.64 kB
-✓ built in 2.05s
+dist/assets/index-DXkklhHf.css   21.08 kB │ gzip:   5.18 kB
+dist/assets/index-DGxRZPiM.js   662.30 kB │ gzip: 197.29 kB
+✓ built in 2.04s
 ```
 
 > 体积增长来自 Recharts / TanStack Table / lucide-react；后端仍以同源方式托管
@@ -306,6 +343,53 @@ $ LLM_GW_AGENT_PASSWORD=verify-pass LLM_GW_DB=/tmp/gw_auth_verify.sqlite3 \
 同一语义在 `tests/harness/test_agent_auth.py`（7 例，含"未配置口令时放行"）与
 `tests/test_runtime.py::test_runtime_guards_agent_api_but_not_console` 里固化。
 
+### 6.6 模型发现与连接测试（v0.8.0）
+
+这一节必须用**真实进程**验证：新增的三个端点分别依赖"后端进程能出网访问供应商"和
+"静态产物里真的挂了新页面"，两者都不是单元测试能证明的。
+
+```bash
+$ ./run.sh          # 127.0.0.1:8000，README 推荐的启动方式
+```
+
+| 请求 | 结果 |
+|---|---|
+| `GET /api/meta` | `200`，`{"version":"0.8.0","changelog":"# 版本更新说明\n\n..."}`——版本号与更新日志同源返回 |
+| `GET /api/providers/openai/models` | `200`，`source="preset"`（上游 401 降级），`error` 如实带回 `https://api.openai.com/v1/models 返回 HTTP 401`；`advanced.items` 为 `temperature / top_p / max_tool_rounds / thinking_mode`，**不含 `top_k`** |
+| `GET /api/providers/anthropic/models` | `200`，`base_url` 为 `https://api.anthropic.com/v1`，上游回 401 `x-api-key header is required` → 同样降级为 `source="preset"` |
+| `GET /api/providers/nope/models` | `404` |
+| `POST /api/models:test`（deepseek，走环境变量密钥） | `200`，`{"ok":false,"code":"AUTH_INVALID","message":"provider (401): Authentication Fails (governor)","latency_ms":92}` |
+| `POST /api/models:test`（缺 `base_url`） | `422` |
+
+三条关键证据：
+
+1. **两家供应商都返回 401 而不是 404**，说明请求 URL 与鉴权头拼装正确（Anthropic 的
+   404 与 401 语义不同，若路径写错会是 404），且失败时**不编造模型清单**——降级用的是
+   preset 内置清单，`error` 字段把真实原因原样交给页面展示。
+2. **连接测试的 401 被归类为 `AUTH_INVALID` 而不是 `CONN_FAILED`**：本机 DeepSeek 密钥
+   已失效，`latency_ms=92` 说明请求确实往返了一次上游。这同时证明了"真实最小对话"这条
+   路径是通的（`ping` + `max_tokens=1`），而不是只做了 TCP 探测。
+3. **`/api/models:test` 缺字段返回 422，上游失败返回 200 + `ok=false`**：HTTP 状态码只
+   表达"请求本身是否合法"，模型通不通由 body 里的 `ok` 表达——否则前端无法区分
+   "表单填错"和"密钥填错"。
+
+浏览器侧用真实 UI 复测（v0.7.0 时这一项曾是 FAIL，原因是当时只选了供应商没填模型名称，
+按钮的 `disabled` 守卫导致点击无效——属操作前提不满足，非缺陷）：
+
+| 观察项 | 结果 |
+|---|---|
+| 打开 `http://127.0.0.1:8000`，左侧导航落在「模型定义」 | PASS |
+| 供应商选 `DeepSeek（deepseek）` 后，页面上出现「未能从供应商拉取模型清单，已回退内置清单：…返回 HTTP 401…」 | PASS |
+| 协议下拉显示 `openai-completions` | PASS |
+| 填写模型名称 `deepseek-chat` 后点「测试连接」，出现结果横幅「连接失败：AUTH_INVALID：provider (401): Authentication Fails (governor)」 | **PASS（上一轮的 FAIL 已消除）** |
+| 浏览器控制台无 JS 报错 | PASS |
+
+> 顺带修掉一个 v0.7.0 遗留缺陷：页面「协议」下拉的选项值写的是 `openai` / `anthropic`，
+> 但 adapter 认识的协议 ID 是 `openai-completions` / `anthropic-messages`。由于选供应商
+> 时会用 preset 的正确值覆盖，只要用户不去动这个下拉就不会暴露；一旦手动选一次，模型
+> （含"测试连接"）就会以"未知的 API 协议"失败。已改为协议 ID，并加
+> `smoke.test.jsx`「协议下拉的值是 adapter 的协议 ID」把它固化下来。
+
 ## 7. 复现方式
 
 ```bash
@@ -320,4 +404,4 @@ cd webapp && npm install && npm test
 .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
 ```
 
-所有 adapter 测试由 `httpx.MockTransport` 驱动，重试测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 351 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝，不触达上游）。
+所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 367 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级，因此**也不需要有效密钥**）。

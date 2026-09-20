@@ -202,7 +202,10 @@ data: [DONE]
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/providers` | 供应商下拉菜单数据源（provider / display_name / api / base_url / env_key / notes） |
+| GET | `/api/providers/{provider}/models` | 向供应商实时查询可选模型 + 能力 + 高级配置项清单；未知供应商 404（0.8.0 新增） |
 | GET | `/api/models` | 模型清单 |
+| POST | `/api/models:test` | 模型连接测试：发一次最小对话验证连通性（0.8.0 新增） |
+| GET | `/api/meta` | 当前版本号与更新日志原文（0.8.0 新增） |
 | POST | `/api/models` | 新增模型 |
 | PUT | `/api/models/{provider}/{model_id}` | 修改模型（改 id/provider 时先移除旧标签，不留孤儿条目） |
 | DELETE | `/api/models/{provider}/{model_id}` | 删除模型 |
@@ -251,7 +254,7 @@ data: [DONE]
 
 ```jsonc
 {
-  "provider": "openai", "id": "gpt-4o-mini", "name": "GPT-4o Mini", "api": "openai",
+  "provider": "openai", "id": "gpt-4o-mini", "name": "GPT-4o Mini", "api": "openai-completions",
   "base_url": "...", "context_window": 128000, "max_tokens": 16384,
   "capabilities": { "sse": true, "streaming": true, "tools": true, "json_schema": true, "vision": true, "reasoning": false },
   "cost": { "input": 0.00015, "output": 0.0006, "cache_read": 0, "cache_write": 0 },
@@ -271,6 +274,61 @@ data: [DONE]
 - 响应里的 `api_key` 恒为 `null`，只回显 `api_key_set` 布尔量——密钥绝不回显给控制台。
 - 实际调用时的取值优先级：模型密钥 > 供应商 preset 约定的环境变量，见 README。
 - `advanced.max_tool_rounds` 是工具调用轮数护栏，超限即返回 `TOOL_ROUNDS_EXCEEDED`（处置为 `fail`）。
+
+### `GET /api/providers/{provider}/models`（0.8.0）
+
+一次请求同时满足需求"模型管理层"第 1a（能力）、1b（可选模型）、1c（高级配置项）：
+
+```jsonc
+{
+  "provider": "openai", "api": "openai-completions", "base_url": "https://api.openai.com/v1",
+  "source": "preset",          // upstream = 实时拉到的；preset = 上游不可用，回退内置清单；empty = 两者都为空
+  "error": "...",              // 上游失败时的原因原文（含 URL 与截断到 200 字的响应体），成功为 null
+  "advanced": {
+    "items": [                 // 1c：该协议真的认得的参数，未知协议给全集
+      { "key": "temperature", "label": "temperature", "kind": "number", "step": 0.05 },
+      { "key": "thinking_mode", "label": "思考模式", "kind": "choice",
+        "choices": [{ "value": "on", "label": "开启" }, { "value": "off", "label": "关闭" }],
+        "note": "开启与关闭互斥；都不勾选则跟随模型默认。" }
+    ]
+  },
+  "models": [
+    { "id": "gpt-4o-mini", "name": "GPT-4o Mini", "known": true,   // known=false 表示上游新出现、preset 里没有的型号
+      "display_provider": "OpenAI",
+      "api": "openai-completions", "base_url": "...",
+      "context_window": 128000, "max_tokens": 16384,
+      "capabilities": { "sse": true, "streaming": true /* … */ },
+      "cost": { "input": 0.00015, "output": 0.0006, "cache_read": 0, "cache_write": 0 } }
+  ]
+}
+```
+
+- 上游只回模型 id，因此能力与价格按 preset 已知型号补齐；**preset 里没有的型号标
+  `known=false` 并只给协议默认能力**（`sse`/`streaming`），不编造数值。
+- 查询用的密钥取"已保存的模型密钥 > preset 约定的环境变量"，与真实调用的优先级一致。
+- 未知供应商返回 `404`。
+
+### `POST /api/models:test`（0.8.0）
+
+请求体与 `POST /api/models` 完全一致（未保存的模型也可以先测再存），返回：
+
+```jsonc
+{ "ok": false, "code": "AUTH_INVALID", "message": "provider (401): Authentication Fails (governor)",
+  "latency_ms": 92, "text": "", "response_model": "" }
+```
+
+- 走 adapter 的非流式调用路径发一次**真实最小对话**（`ping` + `max_tokens=1`），因此
+  能同时验证网络、鉴权、模型 ID 三件事；**不入库、不计费、不落 Trace**。
+- **上游失败也是 `200` + `ok=false`**：模型通不通是"测试结论"，不是"请求非法"；
+  只有请求体本身不合法才返回 `422`。前端据此区分"表单填错"和"密钥填错"。
+
+### `GET /api/meta`（0.8.0）
+
+```jsonc
+{ "version": "0.8.0", "changelog": "# 版本更新说明\n\n…" }
+```
+
+控制台侧边栏据此显示版本号与更新日志；`changelog` 读不到文件时为空串，不影响页面。
 
 ### `GET /api/dashboard`
 

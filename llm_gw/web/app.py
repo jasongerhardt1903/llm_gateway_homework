@@ -6,20 +6,26 @@
 
 模型清单与 gwprofile 通过 :class:`Storage` 的 config 表持久化，重启后不丢失。
 
-版本：0.2.0
+版本：0.8.0
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
-from ..adapter.presets.registry import provider_choices
+from ..adapter import discovery
+from ..adapter.presets.registry import get_preset, provider_choices
+from ..core.messages import Model
 from ..core.schema import SchemaViolation, SyntaxViolation, Task, validate_schema, validate_syntax
 from ..harness.service import GatewayService
 from ..harness.storage import Storage
@@ -43,17 +49,30 @@ CONFIG_PROFILES = "profiles"
 #: 前端构建产物目录（Phase 5 的 React/Vite 工程）。
 _WEBAPP_DIST = Path(__file__).resolve().parents[2] / "webapp" / "dist"
 
+#: 更新日志文件（需求"管理与交互层"第 6 条要求页面可查看更新日志）。
+_CHANGELOG = Path(__file__).resolve().parents[2] / "CHANGELOG.md"
+
+#: 未注入连接池时，控制台自己查询上游用的超时。
+_UPSTREAM_TIMEOUT = httpx.Timeout(30.0)
+
 
 def create_web_app(
     service: GatewayService,
     *,
     registry: CapabilityRegistry | None = None,
     storage: Storage | None = None,
+    client: httpx.AsyncClient | None = None,
+    api_key_for: Callable[[Model], str | None] | None = None,
 ) -> FastAPI:
     """构造控制台应用。
 
     ``registry`` 默认取 ``service.router.registry``；``storage`` 默认取
     ``service.storage``。显式传入便于测试注入内存库。
+
+    ``client`` 与 ``api_key_for`` 供"查询供应商模型清单"和"模型连接测试"使用：
+    组合根把真实运行时的连接池与密钥解析策略注入进来，测试则注入 mocktransport
+    驱动的客户端；两者不注入时由本模块临时建一个连接池、密钥只认模型上已存的
+    值，控制台因此可以独立使用。
     """
     router = service.router
     registry = registry if registry is not None else router.registry
@@ -66,6 +85,26 @@ def create_web_app(
     @app.get("/api/providers")
     async def list_providers() -> list[dict[str, str]]:
         return provider_choices()
+
+    # -- 供应商可选模型与能力（需求"模型管理层"第 1 条） -------------------
+
+    @app.get("/api/providers/{provider}/models")
+    async def list_provider_models(provider: str) -> dict:
+        """向供应商查询可选模型版本（1b）及其能力 / 高级配置项（1a、1c）。
+
+        供应商未知时 404：没有 preset 就没有 base URL 与协议，无从查询。
+        """
+        preset = get_preset(provider)
+        if preset is None:
+            raise HTTPException(status_code=404, detail=f"未知供应商 {provider}")
+        async with _upstream_client(client) as upstream:
+            return await discovery.list_models(
+                provider,
+                api=preset.api,
+                base_url=_provider_base_url(registry, provider) or preset.base_url,
+                client=upstream,
+                api_key=_provider_api_key(registry, provider),
+            )
 
     # -- 模型 CRUD --------------------------------------------------------
 
@@ -103,6 +142,35 @@ def create_web_app(
             raise HTTPException(status_code=404, detail=f"模型 {label} 不存在")
         await _persist_models(registry, storage)
         return {"deleted": label}
+
+    # -- 模型连接测试（需求"模型管理层"第 2 条） ---------------------------
+
+    @app.post("/api/models:test")
+    async def test_model(payload: ModelPayload) -> dict:
+        """发一次最小对话验证连接、鉴权与模型 ID。
+
+        请求体与新增/编辑模型一致，因此**未保存**的模型也能先测再存；密钥优先级
+        与运行期一致：本次请求带的 > 该模型已保存的 > 环境变量。
+
+        测试结果是业务结论而非控制台错误，因此上游失败也返回 200 + ``ok=false``，
+        由界面按结果展示原因；只有请求体本身不合法才走 422。
+        """
+        model = model_from_payload(payload)
+        existing = registry.get(model.label())
+        if payload.api_key is not None:
+            api_key = payload.api_key or None
+        elif existing is not None and existing.api_key:
+            api_key = existing.api_key
+        else:
+            api_key = api_key_for(model) if api_key_for is not None else None
+        async with _upstream_client(client) as upstream:
+            return await discovery.probe_connection(model, client=upstream, api_key=api_key)
+
+    # -- 版本号与更新日志（需求"管理与交互层"第 6 条） ----------------------
+
+    @app.get("/api/meta")
+    async def meta() -> dict:
+        return {"version": __version__, "changelog": _changelog_text()}
 
     # -- gwprofile（需求第 31 行） -----------------------------------------
 
@@ -240,6 +308,56 @@ def _remove_model(registry: CapabilityRegistry, label: str) -> bool:
     before = len(registry.models)
     registry.models = [model for model in registry.models if model.label() != label]
     return len(registry.models) != before
+
+
+@contextlib.asynccontextmanager
+async def _upstream_client(client: httpx.AsyncClient | None) -> AsyncGenerator[httpx.AsyncClient, None]:
+    """查询上游用的连接池：优先复用组合根注入的那个。
+
+    没有注入（测试直接建应用、或把控制台当库用）时临时建一个，用完即关，
+    避免把"必须由组合根先建好连接池"变成使用者的隐性前置条件。
+    """
+    if client is not None:
+        yield client
+        return
+    async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT) as temp:
+        yield temp
+
+
+def _provider_api_key(registry: CapabilityRegistry, provider: str) -> str | None:
+    """该供应商的密钥：先看已保存模型上的值，再看 preset 约定的环境变量。
+
+    ``/models`` 是供应商级接口，调用时还没有"这个模型"这个概念，因此只能按
+    供应商取密钥——同一供应商的各模型共用一把密钥，这与运行期的取值口径一致。
+    """
+    for model in registry.all_models():
+        if model.provider == provider and model.api_key:
+            return model.api_key
+    preset = get_preset(provider)
+    if preset is None:
+        return None
+    return os.environ.get(preset.env_key) or None
+
+
+def _provider_base_url(registry: CapabilityRegistry, provider: str) -> str | None:
+    """已保存模型上的 base URL：用户可能把同一供应商指到自建代理或兼容网关。"""
+    for model in registry.all_models():
+        if model.provider == provider and model.base_url:
+            return model.base_url
+    return None
+
+
+def _changelog_text() -> str:
+    """读取更新日志原文。
+
+    直接回原文而不解析成结构化数据：更新日志是给人看的，多一层解析就多一处
+    与实际文件不一致的机会。文件缺失（如只装了 wheel）时返回空串，界面会显示
+    "暂无更新日志"，不会因此打不开页面。
+    """
+    try:
+        return _CHANGELOG.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 async def _persist_models(registry: CapabilityRegistry, storage: Storage | None) -> None:
