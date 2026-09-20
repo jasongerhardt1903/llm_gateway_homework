@@ -1,10 +1,12 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // 开发期前端跑在 5173，控制台 API 在 8000。用代理而不是绝对 URL：
 // 生产构建后前端由 FastAPI 直接托管在同源根路径，两种模式共用相对路径 ``/api``。
 export default defineConfig({
-  plugins: [react()],
+  // Tailwind v4 走官方 Vite 插件（CSS-first），设计 token 定义在 src/styles.css 的 @theme。
+  plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
     proxy: {

@@ -1,11 +1,19 @@
 import { useEffect, useState } from "react";
+import { List, Search, Waypoints } from "lucide-react";
 import { getTrace, searchTraces } from "../api.js";
+import { PageHeader } from "../components/ui/page-header.jsx";
+import { Card } from "../components/ui/card.jsx";
+import { DataTable } from "../components/ui/data-table.jsx";
+import { Alert } from "../components/ui/alert.jsx";
+import { Badge } from "../components/ui/badge.jsx";
+import { Button } from "../components/ui/button.jsx";
+import { Input } from "../components/ui/field.jsx";
 
 /**
  * Trace 页：结构化展示 + 关键字搜索 + 按任务分组的时间轴瀑布图。
  *
  * 搜索命中后有两种视图：
- * - 「列表」：逐条调用明细列表；
+ * - 「列表」：逐条调用明细列表（表头可排序）；
  * - 「任务视图」：按 run_id（agent 的一次 task）分组，组内每次调用一根横条，
  *   条宽正比于 total_ms、TTFT 段用浅色标出、颜色按终态区分，组头给出任务级汇总。
  *
@@ -46,93 +54,121 @@ export default function TracePage() {
     }
   };
 
-  return (
-    <div className="page">
-      <h2>Trace</h2>
-      {error && <div className="banner banner-error">{error}</div>}
+  const columns = [
+    {
+      id: "ts",
+      header: "时间",
+      accessorFn: (row) => Number(row.ts ?? 0),
+      cell: ({ row }) => (
+        <span className="whitespace-nowrap text-muted">{format_time(row.original.ts)}</span>
+      ),
+    },
+    {
+      accessorKey: "trace_id",
+      header: "Trace",
+      cell: ({ getValue }) => (
+        <span className="font-mono text-xs">{getValue() || "—"}</span>
+      ),
+    },
+    {
+      accessorKey: "model",
+      header: "模型",
+      cell: ({ getValue }) => getValue() || <span className="text-faint">—</span>,
+    },
+    {
+      accessorKey: "terminal",
+      header: "终态",
+      cell: ({ getValue }) => (
+        <Badge tone={terminal_class(getValue())}>{getValue()}</Badge>
+      ),
+    },
+    {
+      accessorKey: "total_ms",
+      header: "总延迟",
+      cell: ({ getValue }) => <span className="tabular">{round(getValue())} ms</span>,
+    },
+    {
+      accessorKey: "ttft_ms",
+      header: "TTFT",
+      cell: ({ getValue }) => <span className="tabular">{round(getValue())} ms</span>,
+    },
+    {
+      id: "tokens",
+      header: "token",
+      accessorFn: (row) => Number(row.usage?.total_tokens ?? 0),
+      cell: ({ getValue }) => <span className="tabular">{getValue()}</span>,
+    },
+    {
+      id: "cost",
+      header: "成本",
+      accessorFn: (row) => Number(row.cost?.total ?? 0),
+      cell: ({ getValue }) => <span className="tabular">${getValue().toFixed(6)}</span>,
+    },
+  ];
 
-      <div className="row">
-        <input
-          className="grow"
+  return (
+    <div>
+      <PageHeader
+        title="Trace"
+        description="按 trace_id / call_id / 模型 / prompt 名 / 错误信息检索调用记录，并展开完整链路。"
+      />
+
+      {error && <Alert className="mb-3">{error}</Alert>}
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Input
+          className="min-w-[260px] flex-1"
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && runSearch()}
           placeholder="搜索 trace_id / call_id / 模型 / prompt 名 / 错误信息"
         />
-        <button type="button" onClick={() => runSearch()}>
+        <Button onClick={() => runSearch()}>
+          <Search size={14} />
           搜索
-        </button>
-        <div className="row-actions">
-          <button
-            type="button"
-            className={view === "list" ? undefined : "btn-secondary"}
+        </Button>
+        <div className="flex items-center gap-1 rounded-md border border-border p-0.5">
+          <Button
+            size="sm"
+            variant={view === "list" ? "primary" : "ghost"}
             onClick={() => setView("list")}
           >
+            <List size={12} />
             列表
-          </button>
-          <button
-            type="button"
-            className={view === "tasks" ? undefined : "btn-secondary"}
+          </Button>
+          <Button
+            size="sm"
+            variant={view === "tasks" ? "primary" : "ghost"}
             onClick={() => setView("tasks")}
           >
+            <Waypoints size={12} />
             任务视图
-          </button>
+          </Button>
         </div>
       </div>
 
       {view === "list" ? (
-        <table className="grid">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>Trace</th>
-              <th>模型</th>
-              <th>终态</th>
-              <th>总延迟</th>
-              <th>TTFT</th>
-              <th>token</th>
-              <th>成本</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr
-                key={row.call_id}
-                className={row.trace_id === selected ? "clickable row-selected" : "clickable"}
-                onClick={() => openTrace(row.trace_id)}
-              >
-                <td>{format_time(row.ts)}</td>
-                <td className="mono">{row.trace_id || "—"}</td>
-                <td>{row.model || "—"}</td>
-                <td>
-                  <span className={`pill pill-${terminal_class(row.terminal)}`}>{row.terminal}</span>
-                </td>
-                <td>{round(row.total_ms)} ms</td>
-                <td>{round(row.ttft_ms)} ms</td>
-                <td>{row.usage?.total_tokens ?? 0}</td>
-                <td>${Number(row.cost?.total ?? 0).toFixed(6)}</td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan="8" className="muted">
-                  没有匹配的调用记录。
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <DataTable
+          columns={columns}
+          data={rows}
+          getRowKey={(row) => row.call_id}
+          onRowClick={(row) => openTrace(row.trace_id)}
+          isRowActive={(row) => row.trace_id === selected}
+          empty="没有匹配的调用记录。"
+        />
       ) : (
         <TaskWaterfall rows={rows} selected={selected} onSelect={openTrace} />
       )}
 
       {chain && (
-        <section>
-          <h3>链路 {selected}</h3>
+        <Card className="mt-4">
+          <h3 className="mb-3 text-sm font-semibold text-fg">
+            链路 <span className="font-mono text-xs text-muted">{selected}</span>
+          </h3>
           {chain.map((call) => (
             <TraceDetail key={call.call_id} call={call} />
           ))}
-        </section>
+        </Card>
       )}
     </div>
   );
@@ -146,7 +182,7 @@ export default function TracePage() {
  */
 export function TaskWaterfall({ rows, selected, onSelect }) {
   if (rows.length === 0) {
-    return <div className="muted">没有匹配的调用记录。</div>;
+    return <p className="text-sm text-muted">没有匹配的调用记录。</p>;
   }
 
   const groups = group_by_task(rows);
@@ -161,8 +197,10 @@ export function TaskWaterfall({ rows, selected, onSelect }) {
         return (
           <section className="task-group" key={group.run_id || "__unlabeled__"}>
             <header className="task-head">
-              <span className="mono">{group.run_id || "未标记任务"}</span>
-              <span className="muted">
+              <span className="font-mono text-xs text-fg">
+                {group.run_id || "未标记任务"}
+              </span>
+              <span className="text-xs text-muted">
                 {group.calls.length} 次调用 · 合计 {round(totalMs)} ms · 错误 {errors} · $
                 {cost.toFixed(6)}
               </span>
@@ -180,10 +218,8 @@ export function TaskWaterfall({ rows, selected, onSelect }) {
                   onClick={() => onSelect(call.trace_id)}
                 >
                   <span className="waterfall-label">
-                    <span className={`pill pill-${terminal_class(call.terminal)}`}>
-                      {call.terminal}
-                    </span>
-                    <span className="mono">{call.model || "—"}</span>
+                    <Badge tone={terminal_class(call.terminal)}>{call.terminal}</Badge>
+                    <span className="font-mono text-xs">{call.model || "—"}</span>
                   </span>
                   <span className="waterfall-track">
                     <span
@@ -193,7 +229,9 @@ export function TaskWaterfall({ rows, selected, onSelect }) {
                       <span className="waterfall-ttft" style={{ width: `${ttftShare}%` }} />
                     </span>
                   </span>
-                  <span className="waterfall-value mono">{round(call.total_ms)} ms</span>
+                  <span className="waterfall-value font-mono text-xs">
+                    {round(call.total_ms)} ms
+                  </span>
                 </div>
               );
             })}
@@ -320,8 +358,9 @@ function TraceDetail({ call }) {
 
   return (
     <details className="trace-detail" open>
-      <summary>
-        <span className="mono">{call.call_id}</span> · {call.model} · {call.terminal}
+      <summary className="cursor-pointer select-none text-sm hover:text-fg2">
+        <span className="font-mono text-xs">{call.call_id}</span> · {call.model} ·{" "}
+        {call.terminal}
       </summary>
       <div className="kv-groups">
         {groups.map(([title, entries]) => (
@@ -330,7 +369,7 @@ function TraceDetail({ call }) {
             {Object.entries(entries).map(([key, value]) => (
               <div className="kv-row" key={key}>
                 <span className="kv-key">{key}</span>
-                <span className="kv-value mono">{display(value)}</span>
+                <span className="kv-value font-mono text-xs">{display(value)}</span>
               </div>
             ))}
           </div>

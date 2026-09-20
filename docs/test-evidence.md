@@ -1,7 +1,10 @@
 # 测试证据
 
-> 本文件是 **v0.4.0** 的存档。v0.4.0 为**纯前端**改动（Trace 页任务视图瀑布图），
-> 后端用例数不变（342），前端冒烟由 5 例增至 8 例（`webapp/src/__tests__/smoke.test.jsx` +3）。
+> 本文件是 **v0.5.0** 的存档。v0.5.0 为**纯前端**改动（控制台整体重做：Tailwind CSS v4
+> + shadcn 风格组件原语 + TanStack Table + Recharts + lucide-react），后端用例数不变（342），
+> 前端冒烟仍为 8 例且**断言未做任何修改**（改造前已通过，改造后继续通过）。
+> v0.4.0 为**纯前端**改动（Trace 页任务视图瀑布图），前端冒烟由 5 例增至 8 例
+> （`webapp/src/__tests__/smoke.test.jsx` +3）。
 > v0.3.0 相比 v0.2.0（336 例）新增 6 例：错误处置三选一
 > 决策表与降级链（`tests/router/test_router.py` +3）、认证降级落库与非阻塞告警
 > （`tests/harness/test_service.py` +3）。v0.2.0 相比 v0.1.0（256 例）新增 80 例：
@@ -158,15 +161,21 @@ $ cd webapp && npm test
 
 覆盖：五个页签渲染（含 Profile 页）、默认页、SSE 事件解析（含**事件被拆到两个网络分片**的场景）、`[DONE]` 不作为业务事件透出、`error` 终态仍交付、HTTP 错误抛出后端 `detail`；以及 v0.4.0 新增的任务瀑布图三例——按 `run_id` 分组（空值归入「未标记任务」、组内时间正序且不改动入参）、条宽相对全局最长调用与 TTFT 占比（含 `total_ms=0` 的最小宽度与除零保护）、分组渲染的汇总文案与终态配色。
 
+v0.5.0 的 UI 重做**没有改动测试文件**：瀑布图的 `.waterfall-bar` / `.waterfall-ok|bad|warn`
+与 `.row-selected` 类名在 Tailwind 组件层里被原样保留，因此这三例继续作为"语义契约"生效。
+
 构建产物同样验证过：
 
 ```bash
 $ cd webapp && npm run build
-dist/index.html                   0.40 kB │ gzip:  0.29 kB
-dist/assets/index-D0KxleHe.css   10.65 kB │ gzip:  2.81 kB
-dist/assets/index-BfyNuMZB.js   169.85 kB │ gzip: 54.08 kB
-✓ built in 276ms
+dist/index.html                   0.40 kB │ gzip:   0.29 kB
+dist/assets/index-Dgw8S1gS.css   20.63 kB │ gzip:   5.10 kB
+dist/assets/index-DzaioPZR.js   658.09 kB │ gzip: 195.64 kB
+✓ built in 2.05s
 ```
+
+> 体积增长来自 Recharts / TanStack Table / lucide-react；后端仍以同源方式托管
+> `webapp/dist`，未新增任何运行时服务。
 
 ## 6. 端到端验证（真实进程）
 

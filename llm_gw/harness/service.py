@@ -268,7 +268,7 @@ def create_app(service: GatewayService) -> FastAPI:
 
     服务实例由调用方注入，便于测试直接塞入带 mock transport 的 Router。
     """
-    app = FastAPI(title="LLM Gateway", version="0.4.0")
+    app = FastAPI(title="LLM Gateway", version="0.5.0")
 
     @app.get("/health")
     async def health() -> dict[str, str]:

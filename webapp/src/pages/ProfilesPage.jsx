@@ -1,11 +1,26 @@
 import { useEffect, useState } from "react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import { createProfile, deleteProfile, listModels, listProfiles, updateProfile } from "../api.js";
+import { PageHeader } from "../components/ui/page-header.jsx";
+import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/card.jsx";
+import { DataTable } from "../components/ui/data-table.jsx";
+import { Alert } from "../components/ui/alert.jsx";
+import { Badge } from "../components/ui/badge.jsx";
+import { Button } from "../components/ui/button.jsx";
+import {
+  CheckboxField,
+  Field,
+  FieldLabel,
+  FormRow,
+  Input,
+  Select,
+} from "../components/ui/field.jsx";
 
 /**
  * gwprofile 管理页（需求第 31 行）。
  *
  * 一个 profile 定义三件事：
- * 1. **模型编组**：包含哪些模型（下拉多选），并对每个模型选择"本模型配置优先于模版"；
+ * 1. **模型编组**：包含哪些模型（勾选加入），并对每个模型选择"本模型配置优先于模版"；
  * 2. **高级配置模版**：在 profile 内生效的统一配置，可整份启用/停用；
  * 3. **路由配置**：动态 / 静态二选一，静态用逗号分隔的优先顺序。
  *
@@ -61,69 +76,143 @@ export default function ProfilesPage() {
     }
   };
 
-  return (
-    <div className="page">
-      <h2>Profile（gwprofile）</h2>
-      {error && <div className="banner banner-error">{error}</div>}
-      {message && <div className="banner banner-ok">{message}</div>}
-
-      <section>
-        <h3>Profile 清单</h3>
-        {profiles.length === 0 ? (
-          <p className="muted">尚未配置 profile。未指定 profile 的请求将走全局模型池。</p>
+  const columns = [
+    {
+      id: "name",
+      header: "名称",
+      accessorFn: (profile) => profile.display_name || profile.name,
+      cell: ({ row }) => (
+        <span className="text-fg">{row.original.display_name || row.original.name}</span>
+      ),
+    },
+    {
+      id: "models",
+      header: "模型",
+      enableSorting: false,
+      accessorFn: (profile) => (profile.models ?? []).length,
+      cell: ({ row }) => {
+        const list = row.original.models ?? [];
+        if (!list.length) return <span className="text-faint">—</span>;
+        return (
+          <span className="flex flex-wrap gap-1">
+            {list.map((model) => (
+              <Badge key={model.label} tone={model.prefer_own_config ? "accent" : "neutral"}>
+                {model.label}
+                {model.prefer_own_config ? " · 优先" : ""}
+              </Badge>
+            ))}
+          </span>
+        );
+      },
+    },
+    {
+      id: "route",
+      header: "路由",
+      accessorFn: (profile) => profile.route_mode,
+      cell: ({ row }) => {
+        const profile = row.original;
+        const isStatic = profile.route_mode === "static";
+        return (
+          <span className="flex flex-wrap items-center gap-1.5">
+            <Badge tone={isStatic ? "warn" : "ok"}>{isStatic ? "静态" : "动态"}</Badge>
+            {isStatic && (profile.static_order ?? []).length > 0 && (
+              <span className="font-mono text-xs text-muted">
+                {profile.static_order.join(" > ")}
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    {
+      id: "template",
+      header: "模版",
+      accessorFn: (profile) => (profile.template_enabled ? 1 : 0),
+      cell: ({ row }) =>
+        row.original.template_enabled ? (
+          <Badge tone="ok">已启用</Badge>
         ) : (
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>模型</th>
-                <th>路由</th>
-                <th>模版</th>
-                <th>最大重试</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {profiles.map((profile) => (
-                <tr key={profile.name}>
-                  <td>{profile.display_name || profile.name}</td>
-                  <td>{profile.models.map((m) => m.label).join(", ")}</td>
-                  <td>
-                    {profile.route_mode === "static" ? "静态" : "动态"}
-                    {profile.route_mode === "static" && profile.static_order.length
-                      ? `（${profile.static_order.join(" > ")}）`
-                      : ""}
-                  </td>
-                  <td>{profile.template_enabled ? "已启用" : "未启用"}</td>
-                  <td>{profile.retry_enabled ? profile.max_retries : "关闭"}</td>
-                  <td>
-                    <div className="row-actions">
-                      <button
-                        type="button"
-                        className="btn-ghost btn-sm"
-                        onClick={() => setEditing(editing?.name === profile.name ? null : profile)}
-                      >
-                        {editing?.name === profile.name ? "取消" : "编辑"}
-                      </button>
-                      <button type="button" className="btn-danger btn-sm" onClick={() => handleDelete(profile)}>
-                        删除
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+          <span className="text-faint">未启用</span>
+        ),
+    },
+    {
+      id: "retry",
+      header: "最大重试",
+      accessorFn: (profile) => (profile.retry_enabled ? Number(profile.max_retries ?? 0) : -1),
+      cell: ({ row }) =>
+        row.original.retry_enabled ? (
+          <span className="tabular">{row.original.max_retries}</span>
+        ) : (
+          <span className="text-faint">关闭</span>
+        ),
+    },
+    {
+      id: "actions",
+      header: "操作",
+      enableSorting: false,
+      cell: ({ row }) => {
+        const profile = row.original;
+        const isEditing = editing?.name === profile.name;
+        return (
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setEditing(isEditing ? null : profile)}>
+              <Pencil size={12} />
+              {isEditing ? "取消" : "编辑"}
+            </Button>
+            <Button variant="danger" size="sm" onClick={() => handleDelete(profile)}>
+              <Trash2 size={12} />
+              删除
+            </Button>
+          </div>
+        );
+      },
+    },
+  ];
 
-      <ProfileForm
-        key={editing ? editing.name : "new"}
-        models={models}
-        initial={editing ?? {}}
-        submitLabel={editing ? "保存修改" : "新增 Profile"}
-        onSubmit={handleSave}
+  return (
+    <div>
+      <PageHeader
+        title="Profile（gwprofile）"
+        description="把模型编成一组，并定义该组内的模版配置、路由方式与重试策略。"
       />
+
+      {error && <Alert className="mb-3">{error}</Alert>}
+      {message && (
+        <Alert tone="ok" className="mb-3">
+          {message}
+        </Alert>
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Profile 清单</CardTitle>
+          <CardDescription>
+            {profiles.length ? `共 ${profiles.length} 个 profile` : "尚未配置 profile"}
+          </CardDescription>
+        </CardHeader>
+        <DataTable
+          columns={columns}
+          data={profiles}
+          getRowKey={(profile) => profile.name}
+          empty="尚未配置 profile。未指定 profile 的请求将走全局模型池。"
+        />
+      </Card>
+
+      <Card className="mt-4">
+        <CardHeader>
+          <CardTitle>{editing ? "编辑 Profile" : "新增 Profile"}</CardTitle>
+          <CardDescription>
+            {editing ? `正在编辑 ${editing.name}` : "先勾选模型，再决定模版与路由"}
+          </CardDescription>
+        </CardHeader>
+        <ProfileForm
+          key={editing ? editing.name : "new"}
+          models={models}
+          initial={editing ?? {}}
+          submitLabel={editing ? "保存修改" : "新增 Profile"}
+          onSubmit={handleSave}
+        />
+      </Card>
     </div>
   );
 }
@@ -151,7 +240,7 @@ function ProfileForm({ models, initial = {}, submitLabel, onSubmit }) {
       name: p.name ?? "",
       display_name: p.display_name ?? "",
       model_labels: selected,
-      prefer: prefer,
+      prefer,
       template_enabled: p.template_enabled ?? false,
       template: { ...(p.template ?? {}) },
       route_mode: p.route_mode ?? "dynamic",
@@ -174,6 +263,9 @@ function ProfileForm({ models, initial = {}, submitLabel, onSubmit }) {
     setForm({ ...form, prefer });
   };
 
+  const setTemplate = (key, value) =>
+    setForm({ ...form, template: { ...form.template, [key]: value } });
+
   const submit = (event) => {
     event.preventDefault();
     const payload = {
@@ -195,140 +287,149 @@ function ProfileForm({ models, initial = {}, submitLabel, onSubmit }) {
       retry_enabled: form.retry_enabled,
       max_retries: form.max_retries,
       static_order:
-        form.route_mode === "static"
-          ? static_text_to_list(staticText)
-          : [],
+        form.route_mode === "static" ? static_text_to_list(staticText) : [],
     };
     onSubmit(payload);
   };
 
   return (
-    <section>
-      <h3>{submitLabel}</h3>
-      <form onSubmit={submit}>
-        <div className="row">
-          <label className="field">
-            Profile 名
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required disabled={!!initial.name} />
-          </label>
-          <label className="field grow">
-            展示名称
-            <input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
-          </label>
-        </div>
+    <form onSubmit={submit} className="flex flex-col gap-4">
+      <FormRow>
+        <Field label="Profile 名" className="w-[200px]">
+          <Input
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            required
+            disabled={!!initial.name}
+          />
+        </Field>
+        <Field label="展示名称" className="min-w-[200px] flex-1">
+          <Input
+            value={form.display_name}
+            onChange={(e) => setForm({ ...form, display_name: e.target.value })}
+          />
+        </Field>
+      </FormRow>
 
-        <p className="field-label">包含的模型（勾选加入，勾选"优先"表示该模型高级配置优先于模版）</p>
-        <div className="row">
-          {models.length === 0 ? (
-            <p className="muted">先在「模型定义」页创建模型。</p>
-          ) : (
-            models.map((model) => {
+      <div>
+        <FieldLabel>包含的模型（勾选加入；右侧方框勾选表示该模型高级配置优先于模版）</FieldLabel>
+        {models.length === 0 ? (
+          <p className="text-sm text-muted">先在「模型定义」页创建模型。</p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {models.map((model) => {
               const label = `${model.provider}/${model.id}`;
               const included = form.model_labels.includes(label);
               return (
-                <label key={label} className="field checkbox">
-                  <input
-                    type="checkbox"
-                    checked={included}
-                    onChange={() => toggleModel(label)}
-                  />
-                  {model.name || model.id}
+                <div
+                  key={label}
+                  className="flex items-center gap-2 rounded-md border border-border-soft bg-raised px-2.5 py-1.5"
+                >
+                  <CheckboxField checked={included} onChange={() => toggleModel(label)}>
+                    <span className="text-fg2">{model.name || model.id}</span>
+                  </CheckboxField>
+                  <span className="font-mono text-xs text-faint">{label}</span>
                   {included && (
-                    <input
-                      type="checkbox"
+                    <CheckboxField
+                      className="ml-auto"
                       checked={form.prefer.has(label)}
                       onChange={() => togglePrefer(label)}
                       title="本模型配置优先于模版"
-                    />
+                    >
+                      <span className="text-xs text-muted">优先</span>
+                    </CheckboxField>
                   )}
-                </label>
+                </div>
               );
-            })
-          )}
-        </div>
+            })}
+          </div>
+        )}
+      </div>
 
-        <p className="field-label">高级配置模版（在 profile 内生效，勾选后按需启用）</p>
-        <label className="field checkbox">
-          <input
-            type="checkbox"
-            checked={form.template_enabled}
-            onChange={(e) => setForm({ ...form, template_enabled: e.target.checked })}
-          />
+      <div>
+        <FieldLabel>高级配置模版（在 profile 内生效，勾选后按需启用）</FieldLabel>
+        <CheckboxField
+          checked={form.template_enabled}
+          onChange={(e) => setForm({ ...form, template_enabled: e.target.checked })}
+        >
           启用模版
-        </label>
-        <div className="row">
+        </CheckboxField>
+        <FormRow className="mt-3">
           {TEMPLATE_NUMBERS.map(([key, label]) => (
-            <label key={key} className="field">
-              {label}
-              <input
+            <Field key={key} label={label} className="w-[150px]">
+              <Input
                 type="number"
                 step={key === "top_k" || key === "max_tool_rounds" ? "1" : "0.05"}
                 value={form.template[key] ?? ""}
-                onChange={(e) => setForm({ ...form, template: { ...form.template, [key]: e.target.value } })}
+                onChange={(e) => setTemplate(key, e.target.value)}
               />
-            </label>
+            </Field>
           ))}
-          <label className="field">
-            思考模式
-            <select
+          <Field label="思考模式" className="w-[170px]">
+            <Select
               value={form.template.thinking_mode ?? "default"}
-              onChange={(e) => setForm({ ...form, template: { ...form.template, thinking_mode: e.target.value } })}
+              onChange={(e) => setTemplate("thinking_mode", e.target.value)}
             >
               <option value="default">跟随模型默认</option>
               <option value="on">开启</option>
               <option value="off">关闭</option>
-            </select>
-          </label>
-        </div>
+            </Select>
+          </Field>
+        </FormRow>
+      </div>
 
-        <p className="field-label">路由配置（需求第 31 行：动态 / 静态二选一）</p>
-        <div className="row">
-          <label className="field">
-            路由模式
-            <select value={form.route_mode} onChange={(e) => setForm({ ...form, route_mode: e.target.value })}>
+      <div>
+        <FieldLabel>路由配置（需求第 31 行：动态 / 静态二选一）</FieldLabel>
+        <FormRow>
+          <Field label="路由模式" className="w-[170px]">
+            <Select
+              value={form.route_mode}
+              onChange={(e) => setForm({ ...form, route_mode: e.target.value })}
+            >
               <option value="dynamic">动态路由</option>
               <option value="static">静态路由</option>
-            </select>
-          </label>
+            </Select>
+          </Field>
           {form.route_mode === "static" && (
-            <label className="field grow">
-              优先顺序（逗号分隔，主 → 备）
-              <input
+            <Field label="优先顺序（逗号分隔，主 → 备）" className="min-w-[280px] flex-1">
+              <Input
                 value={staticText}
                 onChange={(e) => setStaticText(e.target.value)}
                 placeholder="openai/gpt-4o-mini, deepseek/deepseek-chat"
               />
-            </label>
+            </Field>
           )}
-        </div>
+        </FormRow>
+      </div>
 
-        <p className="field-label">重试策略（需求第 128 行）</p>
-        <div className="row">
-          <label className="field">
-            最大重试次数
-            <input
+      <div>
+        <FieldLabel>重试策略（需求第 128 行）</FieldLabel>
+        <FormRow className="items-center">
+          <Field label="最大重试次数" className="w-[150px]">
+            <Input
               type="number"
               min="0"
               max="10"
               value={form.max_retries}
               onChange={(e) => setForm({ ...form, max_retries: Number(e.target.value) })}
             />
-          </label>
-          <label className="field checkbox">
-            <input
-              type="checkbox"
-              checked={form.retry_enabled}
-              onChange={(e) => setForm({ ...form, retry_enabled: e.target.checked })}
-            />
+          </Field>
+          <CheckboxField
+            checked={form.retry_enabled}
+            onChange={(e) => setForm({ ...form, retry_enabled: e.target.checked })}
+          >
             启用重试
-          </label>
-        </div>
+          </CheckboxField>
+        </FormRow>
+      </div>
 
-        <div>
-          <button type="submit">{submitLabel}</button>
-        </div>
-      </form>
-    </section>
+      <div>
+        <Button type="submit">
+          {initial.name ? null : <Plus size={14} />}
+          {submitLabel}
+        </Button>
+      </div>
+    </form>
   );
 }
 

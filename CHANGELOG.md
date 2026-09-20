@@ -2,6 +2,45 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.5.0
+
+本轮**整体重做控制台前端**：在不改动后端 `/api` 契约的前提下，把五个页面从
+"纯手写 CSS + 原生表格"迁移到组件化 UI，并补齐表格排序与指标图表。
+
+### 新增
+
+- **UI 基础库**（`webapp/src/components/ui/`）：引入 Tailwind CSS v4（CSS-first，
+  `@theme` 定义深色 design token）与一组 shadcn 风格的原语组件
+  （`Button` / `Card` / `StatCard` / `Badge` / `Alert` / `Field` / `Input` /
+  `Select` / `Textarea` / `Checkbox` / `Table` / `DataTable` / `PageHeader`）。
+- **可排序表格**：`DataTable` 基于 TanStack Table v8，模型清单、Profile 清单、
+  Dashboard 模型状态、Trace 列表四张表统一支持点表头排序。
+- **Dashboard 图表**：新增「模型调用分布」（成功/失败分组柱）与「Token 消耗」
+  两张 Recharts 图，指标卡改用 `StatCard`。
+- **侧边栏布局**：顶部横向页签改为左侧导航 + 内容区（参考 Langfuse / LiteLLM
+  Admin UI 的信息架构），五个功能入口文案不变。
+
+### 变更
+
+- **样式入口**（`webapp/src/styles.css`）：重写为 Tailwind v4 入口
+  （`@import "tailwindcss"` + `@theme`），原 design token 保留为 CSS 变量；
+  瀑布图 / 聊天气泡 / Trace 明细 / 选中行等复合样式收敛到 `@layer components`，
+  类名与语义（`.waterfall-bar` / `.waterfall-ok|bad|warn` / `.row-selected`）保持不变。
+- **构建**（`webapp/vite.config.js`）：挂载 `@tailwindcss/vite` 插件。
+- **依赖**（`webapp/package.json`）：新增 `tailwindcss`、`@tailwindcss/vite`、
+  `@tanstack/react-table`、`recharts`、`lucide-react`、`clsx`、`tailwind-merge`。
+- **后端契约零改动**：`/api` 端点、请求/响应字段、SSE 事件语义均未变化；
+  Chat 页仅更换外观，SSE 消费逻辑与 `api.js` 保持原样。
+- 版本号 `0.4.0` → `0.5.0`（`llm_gw/__init__.py`、`pyproject.toml`、
+  `webapp/package.json`、`llm_gw/harness/service.py`）。
+
+### 测试
+
+- 前端冒烟 **8 例全部通过且断言未修改**（`webapp/src/__tests__/smoke.test.jsx`）：
+  五个页签文案、默认页含「模型清单」「高级配置」、SSE 解析 3 例、
+  任务瀑布图 3 例（`group_by_task` / `bar_geometry` / `TaskWaterfall` 渲染）。
+- 后端 **342 例通过**（本次为纯前端改动，用例数与覆盖率不变）。
+
 ## 0.4.0
 
 本轮按需求文档业务与交互层第 34 行实现 Trace 页的**按任务图形化展示**：除逐条调用

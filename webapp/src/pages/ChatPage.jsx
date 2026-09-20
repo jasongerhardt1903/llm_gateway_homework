@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { Send, Square } from "lucide-react";
 import { listProfiles, streamChat } from "../api.js";
+import { PageHeader } from "../components/ui/page-header.jsx";
+import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/card.jsx";
+import { Alert } from "../components/ui/alert.jsx";
+import { Badge } from "../components/ui/badge.jsx";
+import { Button } from "../components/ui/button.jsx";
+import { Field, FormRow, Input, Select, Textarea } from "../components/ui/field.jsx";
 
 /**
  * Chat 页：消费网关的 SSE 流。
@@ -94,7 +101,10 @@ export default function ChatPage() {
       );
     } catch (err) {
       if (err.name !== "AbortError") setError(err.message);
-      patch_last({ terminal: "cancelled", error: err.name === "AbortError" ? "已取消" : err.message });
+      patch_last({
+        terminal: "cancelled",
+        error: err.name === "AbortError" ? "已取消" : err.message,
+      });
     } finally {
       setBusy(false);
       abortRef.current = null;
@@ -104,61 +114,84 @@ export default function ChatPage() {
   const stop = () => abortRef.current?.abort();
 
   return (
-    <div className="page">
-      <h2>Chat</h2>
-      {error && <div className="banner banner-error">{error}</div>}
+    <div>
+      <PageHeader
+        title="Chat"
+        description="按 profile 路由的一次真实流式对话，用于验证 SSE 链路与终态语义。"
+      />
 
-      <div className="row">
-        <label className="field">
-          Profile
-          <select value={profile} onChange={(e) => setProfile(e.target.value)}>
-            <option value="">全局模型池</option>
-            {profiles.map((item) => (
-              <option key={item.name} value={item.name}>
-                {item.display_name || item.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field grow">
-          System Prompt
-          <input value={system} onChange={(e) => setSystem(e.target.value)} placeholder="可选" />
-        </label>
-      </div>
+      {error && <Alert className="mb-3">{error}</Alert>}
 
-      <div className="chat-log">
-        {turns.length === 0 && <p className="muted">输入一句话开始对话。</p>}
+      <Card>
+        <CardHeader>
+          <CardTitle>请求参数</CardTitle>
+          <CardDescription>profile 决定本次请求在哪些模型里路由</CardDescription>
+        </CardHeader>
+        <FormRow>
+          <Field label="Profile" className="w-[220px]">
+            <Select value={profile} onChange={(e) => setProfile(e.target.value)}>
+              <option value="">全局模型池</option>
+              {profiles.map((item) => (
+                <option key={item.name} value={item.name}>
+                  {item.display_name || item.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="System Prompt" className="min-w-[240px] flex-1">
+            <Input
+              value={system}
+              onChange={(e) => setSystem(e.target.value)}
+              placeholder="可选"
+            />
+          </Field>
+        </FormRow>
+      </Card>
+
+      <div className="chat-log my-4">
+        {turns.length === 0 && <p className="text-sm text-muted">输入一句话开始对话。</p>}
         {turns.map((turn, index) => (
           <div key={index} className={`bubble bubble-${turn.role}`}>
-            <div className="bubble-role">{turn.role}</div>
+            <div className="mb-1 flex items-center gap-2">
+              <span className="text-xs uppercase tracking-wider text-muted">{turn.role}</span>
+              {turn.terminal && <TerminalBadge terminal={turn.terminal} />}
+            </div>
             {turn.thinking && <pre className="thinking">{turn.thinking}</pre>}
-            <div className="bubble-text">{turn.text || (busy && index === turns.length - 1 ? "…" : "")}</div>
-            {turn.error && <div className="bubble-error">{turn.error}</div>}
+            <div className="text-sm text-fg">
+              {turn.text || (busy && index === turns.length - 1 ? "…" : "")}
+            </div>
+            {turn.error && <div className="mt-2 text-sm text-[#ffb4ae]">{turn.error}</div>}
           </div>
         ))}
       </div>
 
-      <div className="row">
-        <textarea
-          rows="3"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send();
-          }}
-          placeholder="输入消息，⌘/Ctrl + Enter 发送"
-        />
-      </div>
-      <div className="row">
-        <button type="button" onClick={send} disabled={busy}>
+      <Textarea
+        rows="3"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send();
+        }}
+        placeholder="输入消息，⌘/Ctrl + Enter 发送"
+      />
+      <div className="mt-3 flex items-center gap-2">
+        <Button onClick={send} disabled={busy}>
+          <Send size={14} />
           发送
-        </button>
-        <button type="button" className="btn-danger" onClick={stop} disabled={!busy}>
+        </Button>
+        <Button variant="danger" onClick={stop} disabled={!busy}>
+          <Square size={13} />
           中断
-        </button>
+        </Button>
       </div>
     </div>
   );
+}
+
+/** 终态徽标：done / error / cancelled 三态配色与 Trace 页保持一致。 */
+function TerminalBadge({ terminal }) {
+  const tone = terminal === "done" ? "ok" : terminal === "error" ? "bad" : "warn";
+  return <Badge tone={tone}>{terminal}</Badge>;
 }
 
 function safe_parse(text) {
