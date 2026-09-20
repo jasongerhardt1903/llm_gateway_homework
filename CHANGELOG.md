@@ -2,6 +2,32 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.6.0
+
+修复**agent API 未挂载进运行时组合根**的已知限制——此前 `runtime.create_runtime_app`
+只把控制台挂在 `/`，导致真实进程里访问不到 `/health` 与 `/v1/tasks`，只能靠临时入口
+或 `ASGITransport` 绕过。
+
+### 修复
+
+- **agent API 与控制台同进程共存**（`llm_gw/harness/service.py` + `llm_gw/runtime.py`）：
+  把 `/health` 与 `/v1/tasks*` 从 `create_app` 内抽成 `agent_router(service)`，组合根
+  **先** `include_router(agent_router(service))` **再** `mount("/", console)`。
+  注册顺序是硬约束——`mount("/")` 是兜底挂载，agent 路由若排在它之后会被全部吃掉（404）。
+- **回归测试**（`tests/test_runtime.py`）：新增 `test_agent_api_is_mounted_alongside_console`，
+  断言 `/health` 返回 200、`POST /v1/tasks` 非法 JSON 返回 400 `REQUEST_INVALID`
+  （而非被控制台吞掉的 404）、`/v1/tasks:stream` 同样可达、控制台 `/api/models` 仍 200。
+
+### 文档
+
+- `docs/architecture.md` 补充运行时装配顺序的硬约束说明。
+- `docs/test-evidence.md` 第 6.2 节的"已知限制"标记为已修复，并新增 6.4 节记录真实
+  uvicorn 进程验证（`/health` 200、`/v1/tasks` 非法 JSON → 400 `REQUEST_INVALID`）。
+
+### 测试
+
+- 后端 **343 例通过**（`tests/test_runtime.py` +1），覆盖率 92%。
+
 ## 0.5.0
 
 本轮**整体重做控制台前端**：在不改动后端 `/api` 契约的前提下，把五个页面从

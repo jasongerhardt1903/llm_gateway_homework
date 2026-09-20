@@ -28,7 +28,7 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..core.errors import ErrorCode
@@ -42,7 +42,7 @@ from ..util.clock import Clock, RealClock
 from .query import Query
 from .storage import Storage
 
-__all__ = ["GatewayService", "create_app", "BUSINESS_DELTA_TYPES"]
+__all__ = ["GatewayService", "agent_router", "create_app", "BUSINESS_DELTA_TYPES"]
 
 #: 计入 TTFT 的"有业务意义"的事件类型。
 #: ``start`` 只是连接建立信号，把它当首 token 会系统性低估 TTFT。
@@ -263,18 +263,20 @@ def _parse_task(raw: bytes) -> Task:
         raise HTTPException(status_code=422, detail={"code": ErrorCode.REQUEST_INVALID.value, "message": str(exc)})
 
 
-def create_app(service: GatewayService) -> FastAPI:
-    """构造 FastAPI 应用。
+def agent_router(service: GatewayService) -> APIRouter:
+    """agent 对外 HTTP 契约的路由表：``/health`` 与 ``/v1/tasks``。
 
-    服务实例由调用方注入，便于测试直接塞入带 mock transport 的 Router。
+    抽成 router 而不是直接建应用，是为了让组合根把**同一份**路由挂到两种应用上：
+    只含 agent API 的应用（测试用的 ``create_app``）与"控制台 + agent API"的
+    运行时应用（``runtime.create_runtime_app``），避免两处各写一份定义。
     """
-    app = FastAPI(title="LLM Gateway", version="0.5.0")
+    router = APIRouter()
 
-    @app.get("/health")
+    @router.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/v1/tasks")
+    @router.post("/v1/tasks")
     async def create_task(request: Request) -> JSONResponse:
         task = _parse_task(await request.body())
         message = await service.complete(task, trace_id=request.headers.get("x-trace-id"))
@@ -296,7 +298,7 @@ def create_app(service: GatewayService) -> FastAPI:
             }
         )
 
-    @app.post("/v1/tasks:stream")
+    @router.post("/v1/tasks:stream")
     async def stream_task(request: Request) -> StreamingResponse:
         task = _parse_task(await request.body())
         return StreamingResponse(
@@ -305,4 +307,16 @@ def create_app(service: GatewayService) -> FastAPI:
             headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
         )
 
+    return router
+
+
+def create_app(service: GatewayService) -> FastAPI:
+    """构造**只含 agent API** 的 FastAPI 应用。
+
+    服务实例由调用方注入，便于测试直接塞入带 mock transport 的 Router。
+    真实进程走的是 ``runtime.create_runtime_app``——它在同一份路由表之外
+    还挂载了控制台。
+    """
+    app = FastAPI(title="LLM Gateway", version="0.6.0")
+    app.include_router(agent_router(service))
     return app

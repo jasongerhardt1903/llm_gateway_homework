@@ -33,7 +33,7 @@ from .adapter.factory import create_adapter
 from .adapter.presets.registry import all_models, get_preset
 from .core.messages import Model
 from .harness.retry import RetryPolicy
-from .harness.service import GatewayService
+from .harness.service import GatewayService, agent_router
 from .harness.storage import Storage
 from .router.registry import CapabilityRegistry
 from .router.router import Router
@@ -86,8 +86,11 @@ def create_runtime_app(*, db_path: str | None = None) -> FastAPI:
                 await client.aclose()
             await storage.close()
 
-    # 外层只负责生命周期；路由全部由控制台应用提供，因此按根路径挂载。
+    # 外层负责生命周期，并同时提供 agent API 与控制台两套路由。
     app = FastAPI(title="LLM Gateway", version=__version__, lifespan=lifespan)
+    # agent API 必须**先**注册：``mount("/")`` 是兜底挂载，注册在它之后的路径会
+    # 全部被控制台应用吃掉——/health 与 /v1/tasks 之前就是这样在真实进程里 404 的。
+    app.include_router(agent_router(service))
     app.mount("/", console)
     return app
 

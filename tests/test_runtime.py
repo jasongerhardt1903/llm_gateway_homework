@@ -8,6 +8,8 @@
    第一次查询时抛"Storage 尚未初始化"。
 2. **配置跨进程重启不丢**：模型清单与路由规则写进 SQLite，第二次构造
    （模拟重启）时被 `restore_config` 读回内存注册表。
+3. **agent API 与控制台共用同一个进程**：`/health` 与 `/v1/tasks` 必须可达，
+   且不能被 `mount("/")` 的兜底路由吞掉。
 """
 
 from __future__ import annotations
@@ -23,6 +25,12 @@ async def _get(app, path: str) -> httpx.Response:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         return await client.get(path)
+
+
+async def _post(app, path: str, content: bytes) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.post(path, content=content)
 
 
 def test_default_db_path_honours_env(monkeypatch) -> None:
@@ -81,6 +89,34 @@ async def test_unknown_api_path_is_not_swallowed_by_root_mount(tmp_path) -> None
     async with app.router.lifespan_context(app):
         response = await _get(app, "/api/no-such-endpoint")
         assert response.status_code == 404
+
+
+async def test_agent_api_is_mounted_alongside_console(tmp_path) -> None:
+    """agent API 与控制台共用同一进程：``/health`` 与 ``/v1/tasks`` 都必须可达。
+
+    回归的是"网关对外最核心的契约在真实进程里访问不到"——此前 runtime 只挂了
+    控制台，agent 路由（``/health`` / ``/v1/tasks``）一律 404，只能靠临时入口
+    或 ASGITransport 绕过。
+    """
+    app = create_runtime_app(db_path=str(tmp_path / "gw.sqlite3"))
+    async with app.router.lifespan_context(app):
+        health = await _get(app, "/health")
+        assert health.status_code == 200
+        assert health.json() == {"status": "ok"}
+
+        # 非法 JSON 应得到 agent API 的 400 语法错误，而不是控制台的 404：
+        # 说明请求确实进了 agent 路由，没被 mount("/") 吞掉。
+        invalid = await _post(app, "/v1/tasks", content=b"not-json")
+        assert invalid.status_code == 400
+        assert invalid.json()["detail"]["code"] == "REQUEST_INVALID"
+
+        # 流式端点同样挂在真实进程上（同样以非法 JSON 触发 400 来证明可达）。
+        streamed = await _post(app, "/v1/tasks:stream", content=b"not-json")
+        assert streamed.status_code == 400
+        assert streamed.json()["detail"]["code"] == "REQUEST_INVALID"
+
+        # 控制台侧不受影响。
+        assert (await _get(app, "/api/models")).status_code == 200
 
 
 @pytest.mark.parametrize("provider", ["openai", "deepseek", "anthropic"])

@@ -1,8 +1,10 @@
 # 测试证据
 
-> 本文件是 **v0.5.0** 的存档。v0.5.0 为**纯前端**改动（控制台整体重做：Tailwind CSS v4
-> + shadcn 风格组件原语 + TanStack Table + Recharts + lucide-react），后端用例数不变（342），
-> 前端冒烟仍为 8 例且**断言未做任何修改**（改造前已通过，改造后继续通过）。
+> 本文件是 **v0.6.0** 的存档。v0.6.0 把 agent API（`/health`、`/v1/tasks`、`/v1/tasks:stream`）
+> 挂进运行时组合根，后端用例由 342 增至 **343**（`tests/test_runtime.py` +1），覆盖率 92%。
+> v0.5.0 为**纯前端**改动（控制台整体重做：Tailwind CSS v4 + shadcn 风格组件原语 +
+> TanStack Table + Recharts + lucide-react），后端用例数不变（342），前端冒烟仍为 8 例
+> 且**断言未做任何修改**（改造前已通过，改造后继续通过）。
 > v0.4.0 为**纯前端**改动（Trace 页任务视图瀑布图），前端冒烟由 5 例增至 8 例
 > （`webapp/src/__tests__/smoke.test.jsx` +3）。
 > v0.3.0 相比 v0.2.0（336 例）新增 6 例：错误处置三选一
@@ -55,7 +57,7 @@ llm_gw/harness/__init__.py                           0      0   100%
 llm_gw/harness/decisions.py                         14      1    93%   53
 llm_gw/harness/query.py                             20      0   100%
 llm_gw/harness/retry.py                            128     18    86%   98-99, 104-114, 136, 145, 147, 174, 207
-llm_gw/harness/service.py                          111      6    95%   193-197, 229
+llm_gw/harness/service.py                          115      6    95%   193-197, 229
 llm_gw/harness/sse.py                               80      8    90%   97-103, 126
 llm_gw/harness/storage.py                          133      7    95%   134, 161, 164, 168, 269, 334, 398
 llm_gw/router/__init__.py                            0      0   100%
@@ -63,18 +65,18 @@ llm_gw/router/profile.py                            68      4    94%   79, 104, 
 llm_gw/router/registry.py                           60      3    95%   75, 91, 111
 llm_gw/router/router.py                            120     13    89%   106, 110-112, 136, 141-142, 166, 179, 210, 244, 248-249
 llm_gw/router/rules.py                              75      0   100%
-llm_gw/runtime.py                                   48      1    98%   105
+llm_gw/runtime.py                                   49      1    98%   108
 llm_gw/util/__init__.py                              0      0   100%
 llm_gw/util/clock.py                                22      3    86%   31, 34-35
 llm_gw/web/__init__.py                               0      0   100%
 llm_gw/web/api_models.py                            93      1    99%   142
 llm_gw/web/app.py                                  182     19    90%   88, 126, 129-130, 150, 161, 169, 209-210, 247, 255, 303, 305, 307, 309, 311, 313, 324, 331
 ------------------------------------------------------------------------------
-TOTAL                                             3035    249    92%
-342 passed in 1.32s
+TOTAL                                             3040    249    92%
+343 passed in 1.41s
 ```
 
-**342 passed，0 failed，92% 覆盖率。**
+**343 passed，0 failed，92% 覆盖率。**
 
 本轮改动的模块覆盖率：`core/telemetry.py` 100%、`harness/decisions.py` 93%、
 `router/router.py` 89%、`harness/service.py` 95%、`core/errors.py` 85%。
@@ -102,8 +104,8 @@ TOTAL                                             3035    249    92%
 | `tests/router/test_router.py` | 20 | **+3（三选一决策表与降级链）** |
 | `tests/web/test_web_api.py` | 28 | |
 | `tests/test_phase0_infra.py` | 4 | |
-| `tests/test_runtime.py` | 9 | |
-| **合计** | **342** | **+6** |
+| `tests/test_runtime.py` | 10 | **+1（agent API 与控制台同进程共存）** |
+| **合计** | **343** | **+1** |
 
 ## 3. 需求要求的六类测试
 
@@ -127,7 +129,7 @@ TOTAL                                             3035    249    92%
 | `tests/harness/test_service.py` | 客户端断连取消上游、流内 error 不发 `[DONE]`、已流式输出后不盲目重生成、认证失败降级不阻塞且落库、`warnings` 随响应返回 |
 | `tests/core/test_events.py` | 单一终态不变式、`end` 后 push 丢弃 |
 | `tests/web/test_web_api.py` | 模型 CRUD、**密钥只写不回显 / 缺省不修改 / 空串清除**、profile CRUD 往返、Dashboard、Trace 搜索、Chat SSE 代理 |
-| `tests/test_runtime.py` | 组合根：lifespan 挂载、配置跨重启恢复、根挂载不吞 404、**密钥优先级（模型 > 环境变量）** |
+| `tests/test_runtime.py` | 组合根：lifespan 挂载、配置跨重启恢复、根挂载不吞 404、**agent API 与控制台同进程共存**、**密钥优先级（模型 > 环境变量）** |
 | `tests/test_phase0_infra.py` | `FakeClock` 不等待、`sse_transport` 重放分片、`scripted_transport` 按序返回错误 |
 
 ## 4. "不能真的 sleep" 的证明
@@ -221,11 +223,10 @@ dist/assets/index-DzaioPZR.js   658.09 kB │ gzip: 195.64 kB
 | 无多余降级记录 | 库中 `SELECT COUNT(*) FROM requests` | 仍为 `1`——非法请求在进入路由前即被拒绝，未产生任何 `fallback` 记录 |
 | 成功调用无处置 | 该次成功记录的 `disposition` | 落库的降级记录 `disposition='degrade'`；`tests/harness/test_service.py` 另断言成功完成时为 `""` |
 
-> `/v1/tasks`（agent API）在 `llm_gw.runtime.create_runtime_app` 里**未挂载**——运行时只把
-> 控制台挂在 `/`，因此真实进程里访问不到 `/v1/tasks`。上面的 `warnings` 验证用了一个
-> 临时入口（`/tmp/gw_e2e_runtime.py`），复制同一套装配并额外挂上 `harness.service.create_app`，
-> 复用同一份数据库与同一批模型/profile 配置。`/v1/tasks` 本身在
-> `tests/harness/test_service.py` 里由 `ASGITransport` 覆盖。
+> **v0.6.0 已修复**：agent API 现已挂载进 `llm_gw.runtime.create_runtime_app`——组合根先
+> `include_router(agent_router(service))` 再 `mount("/", console)`，因此 `/health` 与
+> `/v1/tasks*` 在真实进程里可达（见第 6.4 节）。上面 `warnings` 验证当时用的临时入口
+> （`/tmp/gw_e2e_runtime.py`）已不再需要，该脚本未纳入仓库。
 
 ### 6.3 旧库迁移（v0.1.0 的库 → v0.2.0）
 
@@ -251,6 +252,29 @@ dist/assets/index-DzaioPZR.js   658.09 kB │ gzip: 195.64 kB
 > 这与 CHANGELOG / README 里"密钥写入 SQLite"的表述不符，属于 v0.2.0 遗留缺陷，
 > 与本次错误处置改造无关，因此只记录不改动。
 
+### 6.4 agent API 与控制台同进程（v0.6.0）
+
+v0.6.0 把 agent 路由挂回运行时组合根——`include_router(agent_router(service))` 必须
+先于 `mount("/", console)`，否则会被兜底挂载吃掉。用真实 uvicorn 进程验证：
+
+```bash
+$ LLM_GW_DB=/tmp/gw_verify.sqlite3 \
+    .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory \
+    --host 127.0.0.1 --port 8010
+```
+
+| 请求 | 结果 |
+|---|---|
+| `GET /health` | `200`，body `{"status":"ok"}` |
+| `POST /v1/tasks`（body `not-json`） | `400`，`{"detail":{"code":"REQUEST_INVALID","message":"malformed JSON at line 1 column 1: Expecting value"}}` |
+| `GET /api/models` | `200`（控制台侧不受影响） |
+| `GET /api/providers` | `200` |
+| `GET /api/dashboard` | `200` |
+
+`/v1/tasks` 返回 `400` 而非 `404` 是关键证据：请求确实进了 agent 路由，没有被
+`mount("/")` 吞掉。同一语义在 `tests/test_runtime.py::test_agent_api_is_mounted_alongside_console`
+里用 `ASGITransport` 固化（同时覆盖 `/v1/tasks:stream` 与"控制台 `/api/*` 仍为 200"）。
+
 ## 7. 复现方式
 
 ```bash
@@ -265,4 +289,4 @@ cd webapp && npm install && npm test
 .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
 ```
 
-所有 adapter 测试由 `httpx.MockTransport` 驱动，重试测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 342 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥）。
+所有 adapter 测试由 `httpx.MockTransport` 驱动，重试测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 343 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥）。
