@@ -19,7 +19,7 @@
 以 ``Authorization: Bearer <password>`` 提交；未配置口令时不强制。``/health``
 与控制台 ``/api/*`` 不在保护范围内。
 
-版本：0.8.0
+版本：0.8.1
 """
 
 from __future__ import annotations

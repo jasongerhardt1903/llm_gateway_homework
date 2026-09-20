@@ -1,6 +1,9 @@
 # 测试证据
 
-> 本文件是 **v0.8.0** 的存档。v0.8.0 落实需求"模型管理层"第 1、2 条与"管理与交互层"
+> 本文件是 **v0.8.1** 的存档。v0.8.1 给 v0.8.0 的模型清单查询加了进程内短时缓存
+> （成功 300 秒 / 失败 30 秒，键含 `base_url`），后端用例由 367 增至 **372**
+> （`tests/web/test_model_discovery.py` +5），覆盖率 92%；前端用例数不变（15）。
+> v0.8.0 落实需求"模型管理层"第 1、2 条与"管理与交互层"
 > 第 6 条：模型配置改为**向供应商实时查询**（可选模型清单 + 能力 + 高级配置项）、
 > **高级配置项逐项可开关且互斥项自动互斥**、新增**模型连接测试**与**页面版本号/更新日志**；
 > 后端用例由 351 增至 **367**（新增 `tests/web/test_model_discovery.py` 16 例），覆盖率 92%；
@@ -44,7 +47,7 @@ Name                                             Stmts   Miss  Cover   Missing
 llm_gw/__init__.py                                   1      0   100%
 llm_gw/adapter/__init__.py                           0      0   100%
 llm_gw/adapter/base.py                             311     28    91%   146, 175, 178, 187, 204, 210, 212, 226, 267, 269, 271, 295, 307, 334, 359, 486, 507-513, 552, 558-561
-llm_gw/adapter/discovery.py                         84      6    93%   181-182, 229-230, 243, 247
+llm_gw/adapter/discovery.py                        101      6    94%   231-232, 279-280, 293, 297
 llm_gw/adapter/factory.py                           14      0   100%
 llm_gw/adapter/presets/__init__.py                   0      0   100%
 llm_gw/adapter/presets/anthropic.py                  8      0   100%
@@ -78,22 +81,23 @@ llm_gw/router/router.py                            120     13    89%   106, 110-
 llm_gw/router/rules.py                              75      0   100%
 llm_gw/runtime.py                                   49      1    98%   112
 llm_gw/util/__init__.py                              0      0   100%
-llm_gw/util/clock.py                                22      3    86%   31, 34-35
+llm_gw/util/clock.py                                22      2    91%   34-35
 llm_gw/web/__init__.py                               0      0   100%
 llm_gw/web/api_models.py                            93      1    99%   142
-llm_gw/web/app.py                                  236     26    89%   127, 163, 194, 197-198, 218, 229, 237, 277-278, 323-324, 338, 347, 359-360, 365, 373, 421, 423, 425, 427, 429, 431, 442, 449
+llm_gw/web/app.py                                  237     26    89%   131, 167, 198, 201-202, 222, 233, 241, 281-282, 327-328, 342, 351, 363-364, 369, 377, 425, 427, 429, 431, 433, 435, 446, 453
 ------------------------------------------------------------------------------
-TOTAL                                             3192    259    92%
-367 passed in 1.55s
+TOTAL                                             3210    258    92%
+372 passed in 2.19s
 ```
 
-**367 passed，0 failed，92% 覆盖率。**
+**372 passed，0 failed，92% 覆盖率。**
 
-本轮改动的模块覆盖率：新增的 `adapter/discovery.py` 93%、`web/app.py` 89%、
-`core/telemetry.py` 100%、`harness/decisions.py` 93%、`router/router.py` 89%、
-`harness/service.py` 95%、`core/errors.py` 86%。
+本轮改动的模块覆盖率：`adapter/discovery.py` 94%（含新增的清单缓存）、
+`web/app.py` 89%、`util/clock.py` 91%、`core/telemetry.py` 100%、
+`harness/decisions.py` 93%、`router/router.py` 89%、`harness/service.py` 95%、
+`core/errors.py` 86%。
 
-`discovery.py` 未覆盖的 6 行（181-182、229-230、243、247）都是错误兜底分支：
+`discovery.py` 未覆盖的 6 行（231-232、279-280、293、297）都是错误兜底分支：
 上游返回非 JSON、缺 `data` 数组、以及通用异常——这些分支的目标行为是"回退到内置
 preset 清单并如实回报 `error`"，已由 `test_provider_models_falls_back_to_preset`
 （HTTP 500）与 `test_provider_models_reports_unparsable_response`（非 JSON / 缺
@@ -121,11 +125,11 @@ preset 清单并如实回报 `error`"，已由 `test_provider_models_falls_back_
 | `tests/router/test_profile_routing.py` | 24 | |
 | `tests/router/test_retry.py` | 21 | |
 | `tests/router/test_router.py` | 20 | |
-| `tests/web/test_model_discovery.py` | 16 | **+16（v0.8.0 新增：模型发现与连接测试）** |
+| `tests/web/test_model_discovery.py` | 21 | **+5（v0.8.1：清单缓存）**；v0.8.0 建此文件（16 例） |
 | `tests/web/test_web_api.py` | 28 | |
 | `tests/test_phase0_infra.py` | 4 | |
 | `tests/test_runtime.py` | 11 | v0.7.0：agent API 与控制台同进程共存 |
-| **合计** | **367** | **+16** |
+| **合计** | **372** | **+5** |
 
 ## 3. 需求要求的六类测试
 
@@ -149,7 +153,7 @@ preset 清单并如实回报 `error`"，已由 `test_provider_models_falls_back_
 | `tests/harness/test_service.py` | 客户端断连取消上游、流内 error 不发 `[DONE]`、已流式输出后不盲目重生成、认证失败降级不阻塞且落库、`warnings` 随响应返回 |
 | `tests/core/test_events.py` | 单一终态不变式、`end` 后 push 丢弃 |
 | `tests/web/test_web_api.py` | 模型 CRUD、**密钥只写不回显 / 缺省不修改 / 空串清除**、profile CRUD 往返、Dashboard、Trace 搜索、Chat SSE 代理 |
-| `tests/web/test_model_discovery.py` | v0.8.0 模型管理层：高级配置项按协议声明差异（OpenAI 不含 `top_k`）、思考模式互斥项、`auth_headers` 逐协议、上游模型清单优先于 preset 与降级、未知型号标记 `known=false` 且不编造能力、Provider 级查询复用已保存密钥、未知供应商 404、**连接测试的最小请求（`max_tokens=1` / `stream=False` / `Bearer`）**、401 → `AUTH_INVALID`、连不上 → `CONN_FAILED`、`/api/meta` 版本与更新日志 |
+| `tests/web/test_model_discovery.py` | v0.8.0 模型管理层：高级配置项按协议声明差异（OpenAI 不含 `top_k`）、思考模式互斥项、`auth_headers` 逐协议、上游模型清单优先于 preset 与降级、未知型号标记 `known=false` 且不编造能力、Provider 级查询复用已保存密钥、未知供应商 404、**连接测试的最小请求（`max_tokens=1` / `stream=False` / `Bearer`）**、401 → `AUTH_INVALID`、连不上 → `CONN_FAILED`、`/api/meta` 版本与更新日志；v0.8.1 加清单缓存——TTL 内只查一次上游、成功与失败两条 TTL 各自到期后重新查、`base_url` 不同不吃同一份缓存、返回副本 |
 | `tests/test_runtime.py` | 组合根：lifespan 挂载、配置跨重启恢复、根挂载不吞 404、**agent API 与控制台同进程共存**、**密钥优先级（模型 > 环境变量）** |
 | `tests/test_phase0_infra.py` | `FakeClock` 不等待、`sse_transport` 重放分片、`scripted_transport` 按序返回错误 |
 
@@ -166,6 +170,11 @@ async def test_retries_transient_error_with_backoff(clock):
 整个 `tests/router/test_retry.py`（21 个用例，含"重试 3 次""退避封顶""退避期间取消"）与当时全量 342 个用例一起在 **1.32 秒**内跑完——若存在真实退避等待，仅退避序列 `500+1000+2000` 就会超过 3.5 秒。
 
 窗口类指标同理：`Storage(now=...)` 的时间来自注入函数，`tests/harness/test_observability.py` 用 `now.value - 120` 精确构造"2 分钟前的记录"，不依赖 `time.sleep`。
+
+v0.8.1 的清单缓存沿用同一套约定：`ModelCatalogCache` 的时钟可注入，
+`tests/web/test_model_discovery.py` 用 `FakeClock` 把时间直接推到 TTL 之后
+（`await clock.sleep((CACHE_TTL_OK + 1) * 1000)`，FakeClock 的时间随 sleep 推进），
+因此"缓存过期"是被**断言**出来的，而不是等 5 分钟等出来的。
 
 ## 5. 前端冒烟
 
@@ -343,7 +352,7 @@ $ LLM_GW_AGENT_PASSWORD=verify-pass LLM_GW_DB=/tmp/gw_auth_verify.sqlite3 \
 同一语义在 `tests/harness/test_agent_auth.py`（7 例，含"未配置口令时放行"）与
 `tests/test_runtime.py::test_runtime_guards_agent_api_but_not_console` 里固化。
 
-### 6.6 模型发现与连接测试（v0.8.0）
+### 6.6 模型发现、连接测试与清单缓存（v0.8.0 / v0.8.1）
 
 这一节必须用**真实进程**验证：新增的三个端点分别依赖"后端进程能出网访问供应商"和
 "静态产物里真的挂了新页面"，两者都不是单元测试能证明的。
@@ -384,6 +393,34 @@ $ ./run.sh          # 127.0.0.1:8000，README 推荐的启动方式
 | 填写模型名称 `deepseek-chat` 后点「测试连接」，出现结果横幅「连接失败：AUTH_INVALID：provider (401): Authentication Fails (governor)」 | **PASS（上一轮的 FAIL 已消除）** |
 | 浏览器控制台无 JS 报错 | PASS |
 
+**清单缓存（v0.8.1）同样用真实进程验证**——缓存是"进程内状态"，单元测试证明不了
+它在真实服务里真的生效。重启服务后连续请求，看耗时落差：
+
+```bash
+$ for i in 1 2 3; do
+    curl -s -o /dev/null -w "第 $i 次: %{time_total}s\n" \
+      http://127.0.0.1:8000/api/providers/deepseek/models
+  done
+第 1 次: 0.116720s   # 真的出网打了上游（收到 401 再降级）
+第 2 次: 0.001002s   # 命中缓存
+第 3 次: 0.001191s
+```
+
+再换供应商，验证缓存键里带了 `provider`（否则会串味）：
+
+```bash
+$ for p in openai anthropic openai; do
+    curl -s -o /dev/null -w "$p: %{time_total}s\n" \
+      http://127.0.0.1:8000/api/providers/$p/models
+  done
+openai:    0.981856s   # 首次，出网
+anthropic: 0.950450s   # 换供应商 → 未命中，出网
+openai:    0.000873s   # 回到 openai → 命中
+```
+
+首次约 0.1~1 秒（一个上游往返）对后续约 1 毫秒，差三个数量级——这是缓存生效最直接
+的证据；而"换供应商就变慢、换回来又快"证明键是按供应商分开的。
+
 > 顺带修掉一个 v0.7.0 遗留缺陷：页面「协议」下拉的选项值写的是 `openai` / `anthropic`，
 > 但 adapter 认识的协议 ID 是 `openai-completions` / `anthropic-messages`。由于选供应商
 > 时会用 preset 的正确值覆盖，只要用户不去动这个下拉就不会暴露；一旦手动选一次，模型
@@ -404,4 +441,4 @@ cd webapp && npm install && npm test
 .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
 ```
 
-所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 367 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级，因此**也不需要有效密钥**）。
+所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试与缓存过期测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 372 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级，因此**也不需要有效密钥**）。

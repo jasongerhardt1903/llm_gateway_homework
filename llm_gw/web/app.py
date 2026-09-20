@@ -6,7 +6,7 @@
 
 模型清单与 gwprofile 通过 :class:`Storage` 的 config 表持久化，重启后不丢失。
 
-版本：0.8.0
+版本：0.8.1
 """
 
 from __future__ import annotations
@@ -80,6 +80,9 @@ def create_web_app(
 
     app = FastAPI(title="LLM Gateway Console", version=__version__)
 
+    # 供应商清单很稳定，缓存起来，避免每开一次「新增模型」就打一次上游。
+    catalog = discovery.ModelCatalogCache()
+
     # -- 供应商（模型定义页的下拉菜单数据源） ------------------------------
 
     @app.get("/api/providers")
@@ -93,12 +96,13 @@ def create_web_app(
         """向供应商查询可选模型版本（1b）及其能力 / 高级配置项（1a、1c）。
 
         供应商未知时 404：没有 preset 就没有 base URL 与协议，无从查询。
+        结果按 ``(provider, api, base_url)`` 走短时缓存，见 ``ModelCatalogCache``。
         """
         preset = get_preset(provider)
         if preset is None:
             raise HTTPException(status_code=404, detail=f"未知供应商 {provider}")
         async with _upstream_client(client) as upstream:
-            return await discovery.list_models(
+            return await catalog.get(
                 provider,
                 api=preset.api,
                 base_url=_provider_base_url(registry, provider) or preset.base_url,

@@ -1,10 +1,12 @@
-"""模型发现与连接测试的测试（需求"模型管理层"第 1、2 条，0.8.0）。
+"""模型发现与连接测试的测试（需求"模型管理层"第 1、2 条，0.8.0 / 0.8.1）。
 
-覆盖三件事：
+覆盖四件事：
 
 1. 供应商模型清单：上游 ``GET /models`` 可达时以它为准，不可达时回退 preset；
 2. 能力与高级配置项：已知型号按 preset 带出，未知型号给协议默认并标记未知；
-3. 连接测试：真实最小对话（``ping`` + ``max_tokens=1``）的成功与各类失败。
+3. 连接测试：真实最小对话（``ping`` + ``max_tokens=1``）的成功与各类失败；
+4. 清单缓存：TTL 内不重复查上游，失败比成功更快重试，键里带 ``base_url``。
+   时间由 ``FakeClock`` 推进，因此**不会真的等待**。
 
 上游全部由 ``httpx.MockTransport`` 模拟，**不联网**。
 """
@@ -240,6 +242,103 @@ async def test_unknown_provider_is_404(model, storage):
 
 
 # --------------------------------------------------------------------------
+# 清单缓存（控制台长期运行，不能每开一次表单就查一次上游）
+# --------------------------------------------------------------------------
+
+
+def _catalog_transport(captured: list, *, ok: bool = True) -> httpx.MockTransport:
+    """上游 ``GET /models``：``ok`` 为真回清单，否则回 401。"""
+    if ok:
+        chunks = [json.dumps({"data": [{"id": "gpt-4o-mini"}]})]
+        return sse_transport(chunks, captured=captured, content_type="application/json")
+    return sse_transport(
+        [json.dumps({"error": {"message": "invalid api key"}})],
+        status=401,
+        captured=captured,
+        content_type="application/json",
+    )
+
+
+async def test_catalog_is_cached_within_ttl(model, storage):
+    """同一个供应商连查两次，上游只被访问一次。"""
+    captured: list = []
+    transport = _catalog_transport(captured)
+    app, _ = _build(model, transport, storage, client=client_for(transport, base_url=model.base_url))
+    async with _client(app) as client:
+        first = (await client.get("/api/providers/openai/models")).json()
+        second = (await client.get("/api/providers/openai/models")).json()
+
+    assert len(captured) == 1
+    assert first == second
+    assert first["source"] == "upstream"
+
+
+async def test_catalog_cache_expires_after_ttl():
+    """成功结果按 CACHE_TTL_OK 过期，过期后必须重新查上游。"""
+    captured: list = []
+    clock = FakeClock()
+    cache = discovery.ModelCatalogCache(clock=clock)
+    url = "https://api.openai.com/v1"
+
+    async with client_for(_catalog_transport(captured), base_url=url) as client:
+        await cache.get("openai", api="openai-completions", base_url=url, client=client)
+        await cache.get("openai", api="openai-completions", base_url=url, client=client)
+        assert len(captured) == 1, "TTL 内不应重复查询"
+
+        # FakeClock 的时间随 sleep 推进，因此这里不会真的等待。
+        await clock.sleep((discovery.CACHE_TTL_OK + 1) * 1000)
+        await cache.get("openai", api="openai-completions", base_url=url, client=client)
+
+    assert len(captured) == 2
+
+
+async def test_catalog_cache_retries_sooner_after_failure():
+    """失败只缓存 CACHE_TTL_ERROR 秒：密钥刚修好不该再白等 5 分钟。"""
+    captured: list = []
+    clock = FakeClock()
+    cache = discovery.ModelCatalogCache(clock=clock)
+    url = "https://api.openai.com/v1"
+
+    async with client_for(_catalog_transport(captured, ok=False), base_url=url) as client:
+        first = await cache.get("openai", api="openai-completions", base_url=url, client=client)
+        assert first["source"] == "preset"
+
+        # 还没到成功 TTL，但已过失败 TTL —— 应当重新尝试。
+        await clock.sleep((discovery.CACHE_TTL_ERROR + 1) * 1000)
+        await cache.get("openai", api="openai-completions", base_url=url, client=client)
+
+    assert len(captured) == 2
+    assert discovery.CACHE_TTL_ERROR < discovery.CACHE_TTL_OK
+
+
+async def test_catalog_cache_hands_out_copies():
+    """返回副本：调用方改动不会污染缓存里那一份。"""
+    captured: list = []
+    cache = discovery.ModelCatalogCache(clock=FakeClock())
+    url = "https://api.openai.com/v1"
+
+    async with client_for(_catalog_transport(captured), base_url=url) as client:
+        first = await cache.get("openai", api="openai-completions", base_url=url, client=client)
+        first["models"].clear()
+        second = await cache.get("openai", api="openai-completions", base_url=url, client=client)
+
+    assert [item["id"] for item in second["models"]] == ["gpt-4o-mini"]
+    assert len(captured) == 1
+
+
+async def test_catalog_cache_keeps_base_url_apart():
+    """同一供应商指到自建代理后要重新查，否则吃的还是官方地址的清单。"""
+    captured: list = []
+    cache = discovery.ModelCatalogCache(clock=FakeClock())
+
+    async with client_for(_catalog_transport(captured), base_url="https://api.openai.com/v1") as client:
+        await cache.get("openai", api="openai-completions", base_url="https://api.openai.com/v1", client=client)
+        await cache.get("openai", api="openai-completions", base_url="https://proxy.local/v1", client=client)
+
+    assert len(captured) == 2
+
+
+# --------------------------------------------------------------------------
 # 模型连接测试
 # --------------------------------------------------------------------------
 
@@ -319,4 +418,5 @@ async def test_meta_exposes_version_and_changelog(model, storage):
         body = (await client.get("/api/meta")).json()
 
     assert body["version"] == __version__
-    assert "## 0.8.0" in body["changelog"]
+    # 断言"当前版本在更新日志里有对应小节"，这样升版本时不必再改这条用例。
+    assert f"## {__version__}" in body["changelog"]

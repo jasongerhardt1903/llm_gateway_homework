@@ -10,7 +10,9 @@
 
 1. :data:`ADVANCED_ITEMS` —— 各协议支持哪些高级项、哪些项互斥；
 2. :func:`list_models` —— 拉取 ``GET {base_url}/models``；供应商没有该端点或
-   调用失败时回退到内置 preset 清单，并如实回报 ``source`` / ``error``；
+   调用失败时回退到内置 preset 清单，并如实回报 ``source`` / ``error``。
+   控制台长期运行，因此外面套一层 :class:`ModelCatalogCache` 短时缓存，避免
+   每开一次"新增模型"就打一次上游；
 3. :func:`probe_connection` —— 真实最小对话（``ping`` + ``max_tokens=1``），
    验证连通性、鉴权与模型 ID 是否有效；不入库、不计费、不落 Trace。
 
@@ -39,6 +41,7 @@ from ..core.errors import (
 )
 from ..core.messages import Capabilities, Model
 from ..core.schema import Task, TaskInput, TaskMessage
+from ..util.clock import Clock, RealClock
 from .base import AdapterOptions
 from .factory import create_adapter
 from .presets.registry import find_model, get_preset
@@ -47,6 +50,9 @@ from .protocols.openai_compat import OpenAICompatAdapter
 
 __all__ = [
     "ADVANCED_ITEMS",
+    "CACHE_TTL_ERROR",
+    "CACHE_TTL_OK",
+    "ModelCatalogCache",
     "advanced_items",
     "auth_headers",
     "list_models",
@@ -95,6 +101,50 @@ _DEFAULT_ITEMS: list[dict[str, Any]] = [_TEMPERATURE, _TOP_P, _TOP_K, _TOOL_ROUN
 #: 因此把输出压到 1 token，把费用与延迟都降到最低。
 PROBE_PROMPT = "ping"
 PROBE_MAX_TOKENS = 1
+
+#: 清单查询的进程内缓存 TTL（秒）。"这家供应商有哪些模型"几分钟内不会变，
+#: 因此成功结果缓存久一点；失败结果只缓存很短时间——密钥刚换好、代理刚起来时
+#: 能很快重试成功，同时又不会因为页面来回切换就反复打上游。
+CACHE_TTL_OK = 300.0
+CACHE_TTL_ERROR = 30.0
+
+
+class ModelCatalogCache:
+    """:func:`list_models` 的进程内短时缓存。
+
+    查一次要出网花一个往返（密钥失效时还要等一次 401 回来），而清单本身很稳定，
+    所以同一个 ``(provider, api, base_url)`` 在 TTL 内只查一次。``base_url``
+    必须进键：用户可能把同一供应商指到自建代理，换了地址就得重新查，否则吃的
+    还是老清单。
+
+    返回的是副本，调用方改动不会污染缓存。``clock`` 可注入（默认真实时钟），
+    测试因此能直接推进时间验证过期，不必真的等待。
+    """
+
+    def __init__(self, *, clock: Clock | None = None) -> None:
+        self._clock: Clock = clock if clock is not None else RealClock()
+        self._entries: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+
+    async def get(
+        self,
+        provider: str,
+        *,
+        api: str,
+        base_url: str,
+        client: httpx.AsyncClient,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """命中未过期的缓存就返回缓存值，否则查一次上游并写入缓存。"""
+        key = (provider, api, base_url)
+        now = self._clock.now()
+        hit = self._entries.get(key)
+        if hit is not None and now < hit[0]:
+            return copy.deepcopy(hit[1])
+
+        result = await list_models(provider, api=api, base_url=base_url, client=client, api_key=api_key)
+        ttl = CACHE_TTL_OK if result["source"] == "upstream" else CACHE_TTL_ERROR
+        self._entries[key] = (now + ttl, result)
+        return copy.deepcopy(result)
 
 
 def advanced_items(api: str) -> list[dict[str, Any]]:
