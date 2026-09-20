@@ -2,6 +2,42 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.7.0
+
+为**面向后端 agent 的接口加上简单口令鉴权**（需求：Harness 层功能第 1 条"支持简单的
+password"）。此前 `/v1/tasks` 与 `/v1/tasks:stream` 完全裸奔，任何能访问该端口的人都能
+消耗你的模型配额。
+
+### 新增
+
+- **口令鉴权**（`llm_gw/harness/service.py`）：新增 `require_agent_password` 依赖，
+  挂在 `/v1/tasks` 与 `/v1/tasks:stream` 上。口令取自环境变量
+  `LLM_GW_AGENT_PASSWORD`，以 `Authorization: Bearer <password>` 提交；比较用
+  `secrets.compare_digest`（定时安全，避免按耗时逐字节试出凭证）。
+- **`AUTH_REQUIRED` 错误码**（`llm_gw/core/errors.py`）：网关入口鉴权失败返回 401 +
+  该码，处置为 `fail`。与上游密钥失效的 `AUTH_INVALID`（处置 `degrade`，换模型继续）
+  **刻意区分**——入口鉴权失败发生在选模型之前，换模型毫无意义，复用会让客户端误判为
+  "供应商密钥问题"而去做无意义的模型切换。
+
+### 设计取舍
+
+- **未配置口令时不强制**：本地开发与 TDD 迭代不必先造一个口令。一旦配置则立即生效，
+  因此生产环境只需设好环境变量，无需改代码或改库。
+- **`/health` 豁免**：探活程序（负载均衡、k8s probe）通常不带凭证，要求凭证会让它们
+  把"服务正常"误判为"服务不可用"。
+- **控制台 `/api/*` 不在保护范围内**：鉴权只作用于 agent 接口。给控制台也加门会连带
+  保护它的静态资源，页面会直接打不开。
+- **口令只从环境变量读**，不写进 SQLite 也不进代码库——口令是部署期凭据，不是业务
+  配置；混进 `llm_gw.sqlite3` 会让"把库拷走"等于"拿到口令"。
+
+### 测试
+
+- `tests/harness/test_agent_auth.py`（新增 7 例）：未配置放行、缺凭证 401、错口令
+  401、非 Bearer 方案 401、正确口令放行、流式端点同样受保护、`/health` 豁免。
+- `tests/test_runtime.py::test_runtime_guards_agent_api_but_not_console`：真实运行时
+  应用上的端到端验证——401 错误码可达、带凭证后进入业务逻辑（非法 JSON 得 400）、
+  `/health` 与控制台接口不受影响。
+
 ## 0.6.0
 
 修复**agent API 未挂载进运行时组合根**的已知限制——此前 `runtime.create_runtime_app`

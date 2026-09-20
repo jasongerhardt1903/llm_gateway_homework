@@ -1,6 +1,9 @@
 # 测试证据
 
-> 本文件是 **v0.6.0** 的存档。v0.6.0 把 agent API（`/health`、`/v1/tasks`、`/v1/tasks:stream`）
+> 本文件是 **v0.7.0** 的存档。v0.7.0 为 agent 接口（`/v1/tasks`、`/v1/tasks:stream`）
+> 加上简单口令鉴权，并新增 `AUTH_REQUIRED` 错误码；后端用例由 343 增至 **351**
+> （`tests/harness/test_agent_auth.py` +7、`tests/test_runtime.py` +1），覆盖率 92%。
+> v0.6.0 把 agent API（`/health`、`/v1/tasks`、`/v1/tasks:stream`）
 > 挂进运行时组合根，后端用例由 342 增至 **343**（`tests/test_runtime.py` +1），覆盖率 92%。
 > v0.5.0 为**纯前端**改动（控制台整体重做：Tailwind CSS v4 + shadcn 风格组件原语 +
 > TanStack Table + Recharts + lucide-react），后端用例数不变（342），前端冒烟仍为 8 例
@@ -275,6 +278,34 @@ $ LLM_GW_DB=/tmp/gw_verify.sqlite3 \
 `mount("/")` 吞掉。同一语义在 `tests/test_runtime.py::test_agent_api_is_mounted_alongside_console`
 里用 `ASGITransport` 固化（同时覆盖 `/v1/tasks:stream` 与"控制台 `/api/*` 仍为 200"）。
 
+### 6.5 agent 接口口令鉴权（v0.7.0）
+
+用真实 uvicorn 进程验证鉴权，而不是只看单元测试——鉴权是"挂依赖"这类
+装配层事实，静态分析看不出来：
+
+```bash
+$ LLM_GW_AGENT_PASSWORD=verify-pass LLM_GW_DB=/tmp/gw_auth_verify.sqlite3 \
+    .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory \
+    --host 127.0.0.1 --port 8011
+```
+
+| 请求 | 结果 |
+|---|---|
+| `POST /v1/tasks`（无凭证） | `401`，`{"detail":{"code":"AUTH_REQUIRED","message":"agent 接口口令无效"}}` |
+| `POST /v1/tasks`（`Bearer wrong`） | `401`，同上 |
+| `POST /v1/tasks`（`Bearer verify-pass`，body `not-json`） | `400`，`{"detail":{"code":"REQUEST_INVALID",...}}` |
+| `POST /v1/tasks:stream`（无凭证） | `401`，`AUTH_REQUIRED` |
+| `GET /health`（无凭证） | `200`，`{"status":"ok"}` |
+| `GET /api/models`（无凭证） | `200`（控制台不在保护范围） |
+| 401 响应头 | `www-authenticate: Bearer` |
+
+关键证据有两条：① 正确口令下非法 JSON 得到 **400** 而非 401，说明凭证校验通过后请求
+确实进入了业务逻辑，而不是被"一律拒绝"蒙混过去；② `/health` 与控制台 `/api/models`
+在配置了口令后仍为 `200`，说明豁免范围正确——否则探活会误判服务不可用、页面会打不开。
+
+同一语义在 `tests/harness/test_agent_auth.py`（7 例，含"未配置口令时放行"）与
+`tests/test_runtime.py::test_runtime_guards_agent_api_but_not_console` 里固化。
+
 ## 7. 复现方式
 
 ```bash
@@ -289,4 +320,4 @@ cd webapp && npm install && npm test
 .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
 ```
 
-所有 adapter 测试由 `httpx.MockTransport` 驱动，重试测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 343 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥）。
+所有 adapter 测试由 `httpx.MockTransport` 驱动，重试测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 351 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝，不触达上游）。

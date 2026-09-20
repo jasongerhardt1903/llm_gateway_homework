@@ -193,6 +193,7 @@ docs/                     architecture.md interface.md error-codes.md retry-stra
 | 前缀 | `/v1/*` | `/api/*` |
 | 请求体 | 统一 `Task` | 控制台专用模型（`ChatRequest` 等） |
 | 面向 | 程序 | 人 |
+| 鉴权 | 需要：`Authorization: Bearer <password>`（口令取自 `LLM_GW_AGENT_PASSWORD`） | 不需要（浏览器自用，加门会连页面一起挡掉） |
 
 `web/app.py` 额外提供模型 CRUD、gwprofile 配置、Dashboard 聚合与 Trace 搜索——这些 agent 不需要。`runtime.py` 把两者装配到同一个进程：外层 app 负责生命周期（启动时 `storage.init()` + `restore_config()`，关闭时释放 httpx 连接池与数据库连接），并同时提供两套路由——**先** `include_router(agent_router(service))` 注册 `/health` 与 `/v1/tasks*`，**再** `mount("/", console)` 挂控制台。
 

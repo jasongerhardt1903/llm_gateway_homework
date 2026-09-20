@@ -1,7 +1,7 @@
 # LLM Gateway
 
 统一的大模型网关：为后端 agent 提供一致的 LLM 接入接口，并在内部完成
-**路由、降级、重试、流式、可观测**。当前版本 **0.6.0**（见 [CHANGELOG.md](CHANGELOG.md)）。
+**路由、降级、重试、流式、可观测**。当前版本 **0.7.0**（见 [CHANGELOG.md](CHANGELOG.md)）。
 
 架构上分五层，依赖方向单向（左依赖右）：
 
@@ -74,11 +74,12 @@ LLM_GW_HOST=0.0.0.0 ./run.sh  # 局域网可访问
 | `LLM_GW_DB` | `./llm_gw.sqlite3` | SQLite 数据库路径 |
 | `LLM_GW_HOST` | `127.0.0.1` | 监听地址（`0.0.0.0` 供局域网访问） |
 | `LLM_GW_PORT` | `8000` | 监听端口（也可用 `--port` 覆盖） |
+| `LLM_GW_AGENT_PASSWORD` | 空（不强制） | agent 接口（`/v1/tasks*`）口令。设置后要求 `Authorization: Bearer <password>`；未设置则放行 |
 | `OPENAI_API_KEY` 等 | 空 | 上游密钥，回退路径 |
 
 ## 控制台用法
 
-打开 `http://127.0.0.1:8000`，顶部五个页签：
+打开 `http://127.0.0.1:8000`，左侧导航五个入口：
 
 1. **模型定义** —— 增删改模型：供应商、实际模型 ID、base URL、上下文窗口、能力、成本；
    以及**高级配置项**（`temperature` / `top_p` / `top_k` / 工具调用轮数 / 思考模式）、

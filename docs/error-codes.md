@@ -7,6 +7,7 @@
 | 错误码 | 阶段 | 含义 | 典型触发 |
 |---|---|---|---|
 | `AUTH_INVALID` | 认证 | 密钥无效 / 租户禁用 / 配额耗尽 | 401、403、`insufficient_quota`、`billing` |
+| `AUTH_REQUIRED` | 网关入口 | agent 口令缺失或错误 | 调用 `/v1/tasks*` 未带 `Authorization: Bearer`，或口令不符 |
 | `REQUEST_INVALID` | 请求验证 | 参数非法 / Schema 缺失 | 400、404、422 |
 | `PROMPT_INVALID` | Prompt | 缺变量 / 超预算 | Prompt 模板渲染失败 |
 | `ROUTE_NO_CANDIDATE` | 路由 | 无兼容模型 | 全部候选被能力过滤或不可用 |
@@ -55,6 +56,7 @@
 | 阶段 | 典型错误 | 是否适合重试 | 错误码 | 处置 | 网关行为 |
 |---|---|---|---|---|---|
 | 认证 | API Key 无效，租户禁用 | 否 | `AUTH_INVALID` | `degrade` | 换成路由表中下一个模型继续，并附 `warnings` 告警**不阻塞**；没有下一个模型则返回错误 |
+| 认证（网关入口） | agent 口令缺失 / 错误 | 否 | `AUTH_REQUIRED` | `fail` | 直接返回 401。发生在选模型**之前**，没有"换下一个模型"这回事——调用方改正凭证后重新发起 |
 | 请求验证 | 参数非法，Schema 缺失 | 否 | `REQUEST_INVALID` | `fail` | 直接返回错误，不重试 |
 | 请求验证 | 工具调用轮数超上限 | 否 | `TOOL_ROUNDS_EXCEEDED` | `fail` | 在调用上游之前拒绝，避免为注定被拒的请求付费 |
 | Prompt | 缺变量，超过预算 | 修正请求后重试 | `PROMPT_INVALID` | `degrade` | 网关不修改请求，按路由更换模型再试 |

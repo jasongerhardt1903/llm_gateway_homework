@@ -27,10 +27,10 @@ async def _get(app, path: str) -> httpx.Response:
         return await client.get(path)
 
 
-async def _post(app, path: str, content: bytes) -> httpx.Response:
+async def _post(app, path: str, content: bytes, headers: dict | None = None) -> httpx.Response:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.post(path, content=content)
+        return await client.post(path, content=content, headers=headers)
 
 
 def test_default_db_path_honours_env(monkeypatch) -> None:
@@ -116,6 +116,32 @@ async def test_agent_api_is_mounted_alongside_console(tmp_path) -> None:
         assert streamed.json()["detail"]["code"] == "REQUEST_INVALID"
 
         # 控制台侧不受影响。
+        assert (await _get(app, "/api/models")).status_code == 200
+
+
+async def test_runtime_guards_agent_api_but_not_console(tmp_path, monkeypatch) -> None:
+    """真实进程里：配置口令后 agent 接口要求凭证，控制台与 ``/health`` 不受影响。
+
+    这是"鉴权真的挂在了运行时应用上"的证据——只在 ``create_app`` 的测试里验证
+    是不够的，运行时是另一个应用（``create_runtime_app`` 自己建 FastAPI）。
+    """
+    monkeypatch.setenv("LLM_GW_AGENT_PASSWORD", "s3cret")
+    app = create_runtime_app(db_path=str(tmp_path / "gw.sqlite3"))
+    async with app.router.lifespan_context(app):
+        # 未带凭证 → 401 + agent 的稳定错误码（而不是控制台的 404）。
+        denied = await _post(app, "/v1/tasks", content=b"not-json")
+        assert denied.status_code == 401
+        assert denied.json()["detail"]["code"] == "AUTH_REQUIRED"
+
+        # 带正确凭证 → 进入业务逻辑：非法 JSON 得到 agent 的 400。
+        allowed = await _post(
+            app, "/v1/tasks", content=b"not-json", headers={"authorization": "Bearer s3cret"}
+        )
+        assert allowed.status_code == 400
+        assert allowed.json()["detail"]["code"] == "REQUEST_INVALID"
+
+        # /health 豁免（探活不带凭证），控制台页面与接口不鉴权。
+        assert (await _get(app, "/health")).status_code == 200
         assert (await _get(app, "/api/models")).status_code == 200
 
 

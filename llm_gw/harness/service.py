@@ -15,7 +15,11 @@
 ``CallRecord.resilience`` 并在响应里回传 ``warnings``——需求要求"妥善记录"
 重试 / 降级 / 报错三选一的结果。
 
-版本：0.3.0
+携带请求的 agent 接口受简单口令保护：口令取自环境变量 ``LLM_GW_AGENT_PASSWORD``，
+以 ``Authorization: Bearer <password>`` 提交；未配置口令时不强制。``/health``
+与控制台 ``/api/*`` 不在保护范围内。
+
+版本：0.7.0
 """
 
 from __future__ import annotations
@@ -23,12 +27,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import secrets
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..core.errors import ErrorCode
@@ -42,7 +48,15 @@ from ..util.clock import Clock, RealClock
 from .query import Query
 from .storage import Storage
 
-__all__ = ["GatewayService", "agent_router", "create_app", "BUSINESS_DELTA_TYPES"]
+__all__ = [
+    "AGENT_PASSWORD_ENV",
+    "GatewayService",
+    "agent_password",
+    "agent_router",
+    "create_app",
+    "require_agent_password",
+    "BUSINESS_DELTA_TYPES",
+]
 
 #: 计入 TTFT 的"有业务意义"的事件类型。
 #: ``start`` 只是连接建立信号，把它当首 token 会系统性低估 TTFT。
@@ -263,6 +277,41 @@ def _parse_task(raw: bytes) -> Task:
         raise HTTPException(status_code=422, detail={"code": ErrorCode.REQUEST_INVALID.value, "message": str(exc)})
 
 
+#: agent 接口口令所在的环境变量名。
+#:
+#: 只从环境变量读，不进数据库、不进代码库——口令是部署期凭据，不是业务配置，
+#: 混进 ``llm_gw.sqlite3`` 会让"把库拷走"等于"拿到口令"。
+AGENT_PASSWORD_ENV = "LLM_GW_AGENT_PASSWORD"
+
+
+def agent_password() -> str | None:
+    """读取期望口令；空串视同未配置（``.env`` 里写 ``KEY=`` 很常见）。"""
+    return os.environ.get(AGENT_PASSWORD_ENV) or None
+
+
+async def require_agent_password(request: Request) -> None:
+    """agent 接口的简单口令校验（需求：Harness 层功能第 1 条）。
+
+    * 未配置口令时**放行**——本地开发与 TDD 迭代不必先造一个口令；
+    * 配置后要求 ``Authorization: Bearer <password>``，否则 401 + ``AUTH_INVALID``；
+    * 只作用于 agent 接口（``/v1/tasks`` 与 ``/v1/tasks:stream``）。控制台
+      ``/api/*`` 不挂这个依赖，否则页面自己都打不开；``/health`` 也刻意豁免，
+      探活程序通常不带凭证。
+    """
+    expected = agent_password()
+    if expected is None:
+        return
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    # 用 compare_digest 做定时安全比较：== 会在首个不同字符处短路，
+    # 反复请求就能按耗时把口令逐字节猜出来。
+    if scheme.lower() != "bearer" or not secrets.compare_digest(token, expected):
+        raise HTTPException(
+            status_code=401,
+            detail={"code": ErrorCode.AUTH_REQUIRED.value, "message": "agent 接口口令无效"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 def agent_router(service: GatewayService) -> APIRouter:
     """agent 对外 HTTP 契约的路由表：``/health`` 与 ``/v1/tasks``。
 
@@ -276,7 +325,7 @@ def agent_router(service: GatewayService) -> APIRouter:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @router.post("/v1/tasks")
+    @router.post("/v1/tasks", dependencies=[Depends(require_agent_password)])
     async def create_task(request: Request) -> JSONResponse:
         task = _parse_task(await request.body())
         message = await service.complete(task, trace_id=request.headers.get("x-trace-id"))
@@ -298,7 +347,7 @@ def agent_router(service: GatewayService) -> APIRouter:
             }
         )
 
-    @router.post("/v1/tasks:stream")
+    @router.post("/v1/tasks:stream", dependencies=[Depends(require_agent_password)])
     async def stream_task(request: Request) -> StreamingResponse:
         task = _parse_task(await request.body())
         return StreamingResponse(
@@ -317,6 +366,6 @@ def create_app(service: GatewayService) -> FastAPI:
     真实进程走的是 ``runtime.create_runtime_app``——它在同一份路由表之外
     还挂载了控制台。
     """
-    app = FastAPI(title="LLM Gateway", version="0.6.0")
+    app = FastAPI(title="LLM Gateway", version="0.7.0")
     app.include_router(agent_router(service))
     return app

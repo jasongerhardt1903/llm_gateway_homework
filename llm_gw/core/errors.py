@@ -50,6 +50,10 @@ class ErrorCode(str, Enum):
 
     # 认证 / 授权
     AUTH_INVALID = "AUTH_INVALID"
+    # 网关入口鉴权失败：调用方未提供或提供了错误的 agent 口令。
+    # 与 AUTH_INVALID 区分开——后者是"上游供应商密钥失效"（可换模型降级），
+    # 前者是"你没通过网关的门"（换模型毫无意义，只能改正凭证后重发）。
+    AUTH_REQUIRED = "AUTH_REQUIRED"
     # 请求验证（参数非法、Schema 缺失）
     REQUEST_INVALID = "REQUEST_INVALID"
     # 请求验证：工具调用轮数超过该模型/profile 配置的上限
@@ -119,6 +123,10 @@ ERROR_DECISIONS: dict[ErrorCode, ErrorDecision] = {
     ErrorCode.AUTH_INVALID: ErrorDecision(
         ErrorDisposition.DEGRADE,
         "更换路由表中下一个模型并告警，不阻塞；没有下一个模型则返回错误。",
+    ),
+    # 网关入口鉴权失败发生在选模型之前，没有"换一个模型"这回事。
+    ErrorCode.AUTH_REQUIRED: ErrorDecision(
+        ErrorDisposition.FAIL, "直接返回错误；调用方改正凭证后重新发起。"
     ),
     ErrorCode.REQUEST_INVALID: ErrorDecision(
         ErrorDisposition.FAIL, "直接返回错误，不重试。"

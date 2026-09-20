@@ -71,6 +71,28 @@ task does not match schema:
 
 ## 2. agent API（`harness/service.py`）
 
+### 鉴权
+
+agent API 受**简单口令**保护；控制台 `/api/*` 不在保护范围内（否则页面自身都打不开）。
+
+| 项 | 约定 |
+|---|---|
+| 口令来源 | 环境变量 `LLM_GW_AGENT_PASSWORD`（只读环境变量，不写库、不入代码库） |
+| 携带方式 | `Authorization: Bearer <password>` |
+| 未配置口令 | **不强制**（便于本地开发；生产环境请务必配置） |
+| 豁免 | `GET /health`——探活程序通常不带凭证 |
+| 失败 | `401` + `AUTH_REQUIRED`，响应头带 `WWW-Authenticate: Bearer` |
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/tasks \
+  -H "Authorization: Bearer $LLM_GW_AGENT_PASSWORD" \
+  -H "content-type: application/json" \
+  -d '{"task_id":"req-1","input":{"messages":[{"role":"user","content":"hi"}]}}'
+```
+
+`AUTH_REQUIRED`（网关入口，处置 `fail`）与 `AUTH_INVALID`（上游密钥失效，处置
+`degrade`）是两回事：前者发生在选模型**之前**，换模型没有意义。
+
 ### `POST /v1/tasks` — 非流式
 
 请求体：统一 `Task`。
@@ -311,6 +333,7 @@ export DEEPSEEK_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
 export LLM_GW_DB=/path/to/llm_gw.sqlite3   # 可选，默认 ./llm_gw.sqlite3
 export LLM_GW_HOST=0.0.0.0                 # 可选，局域网访问
+export LLM_GW_AGENT_PASSWORD=...           # 可选；设置后 /v1/tasks* 要求 Bearer 口令
 ```
 
 前端开发模式：

@@ -7,6 +7,9 @@
 #   ./run.sh --reload             # 开发模式，改代码自动重启
 #   LLM_GW_HOST=0.0.0.0 ./run.sh  # 局域网可访问
 #
+# agent 接口（/v1/tasks*）的口令来自 .env 或环境变量 LLM_GW_AGENT_PASSWORD；
+# 未设置时不强制，设置了就必须带 Authorization: Bearer <password>。
+#
 # 用 venv 里的 python 绝对路径启动，而不是裸 `python3`/`uvicorn`：
 # 机器上装了多个 Python，PATH 在不同终端里顺序不同，裸命令会随机撞上
 # 没有依赖的那个解释器（表现为 ModuleNotFoundError: uvicorn / aiosqlite）。
