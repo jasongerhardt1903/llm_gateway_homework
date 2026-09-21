@@ -384,6 +384,150 @@ async def test_post_task_response_carries_warnings(openai_model):
     assert any("AUTH_INVALID" in warning for warning in body["warnings"])
 
 
+# --------------------------------------------------------------------------
+# 流式降级（需求 adapter 层第 8 条："降级时按路由中可用模型执行"）
+# --------------------------------------------------------------------------
+
+
+def _error_transport(status: int, message: str) -> httpx.MockTransport:
+    return _json_transport({"error": {"message": message}}, status=status)
+
+
+async def test_stream_degrades_to_backup_before_first_delta(openai_model):
+    """首 delta 前的认证失败：吞掉主模型的 error，改用备用路由重开一条流。
+
+    对外必须仍然只看到一个终态——被放弃的那条流的 ``error`` 不得转发给客户端。
+    """
+    primary = openai_model
+    backup = replace(openai_model, id="gpt-4o")
+    storage = await Storage(":memory:").init()
+    backup_calls: list = []
+    service = _two_model_service(
+        primary,
+        backup,
+        _error_transport(401, "invalid api key"),
+        sse_transport(openai_sse(text="你好"), captured=backup_calls),
+        storage,
+    )
+
+    frames = [frame async for frame in service.stream_sse(_validated_with_profile("smart"))]
+    body = b"".join(frames).decode()
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert "你好" in body
+    assert body.count("event: done") == 1
+    assert body.count("data: [DONE]") == 1
+    assert "event: error" not in body  # 被放弃的流的终态不对外
+    assert len(backup_calls) == 1  # 备用路由确实被调用
+
+    assert rows[0]["model"] == "gpt-4o"  # 落库的是真正服务本次请求的模型
+    assert rows[0]["attempt"] == 2
+    assert rows[0]["fallback"] == 1
+    assert rows[0]["disposition"] == "degrade"
+    assert rows[0]["terminal"] == "done"
+
+
+async def test_stream_does_not_degrade_after_first_delta(openai_model):
+    """已吐过业务 delta 后中断：不换模型（需求"不盲目重新生成"）。"""
+    primary = openai_model
+    backup = replace(openai_model, id="gpt-4o")
+    storage = await Storage(":memory:").init()
+    backup_calls: list = []
+    primary_transport = sse_transport(
+        [
+            "data: "
+            + json.dumps(
+                {"choices": [{"index": 0, "delta": {"content": "部分"}, "finish_reason": None}]}
+            ),
+            "",
+            "data: "
+            + json.dumps({"error": {"message": "upstream overloaded", "type": "server_error"}}),
+            "",
+        ]
+    )
+    service = _two_model_service(
+        primary,
+        backup,
+        primary_transport,
+        sse_transport(openai_sse(text="不该出现"), captured=backup_calls),
+        storage,
+    )
+
+    frames = [frame async for frame in service.stream_sse(_validated_with_profile("smart"))]
+    body = b"".join(frames).decode()
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert "event: error" in body
+    assert "[DONE]" not in body
+    assert "不该出现" not in body
+    assert backup_calls == []  # 备用路由根本没被碰
+
+    assert rows[0]["model"] == "gpt-4o-mini"
+    assert rows[0]["fallback"] == 0
+    assert rows[0]["attempt"] == 1
+
+
+async def test_stream_fail_disposition_is_never_degraded(openai_model):
+    """``FAIL`` 处置（请求非法）换模型也不会变好，必须如实报错。"""
+    primary = openai_model
+    backup = replace(openai_model, id="gpt-4o")
+    storage = await Storage(":memory:").init()
+    backup_calls: list = []
+    service = _two_model_service(
+        primary,
+        backup,
+        _error_transport(400, "bad request"),
+        sse_transport(openai_sse(text="不该出现"), captured=backup_calls),
+        storage,
+    )
+
+    frames = [frame async for frame in service.stream_sse(_validated_with_profile("smart"))]
+    body = b"".join(frames).decode()
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert "event: error" in body
+    assert "[DONE]" not in body
+    assert backup_calls == []
+    assert rows[0]["fallback"] == 0
+    assert rows[0]["error_code"] == "REQUEST_INVALID"
+
+
+async def test_stream_without_backup_surfaces_error(openai_model):
+    """只有主路由（无备用）时无处可降，错误照常上报。"""
+    storage = await Storage(":memory:").init()
+    service, _ = _build(openai_model, _error_transport(401, "invalid api key"), storage=storage)
+
+    frames = [frame async for frame in service.stream_sse(_validated())]
+    body = b"".join(frames).decode()
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert "event: error" in body
+    assert "[DONE]" not in body
+    assert rows[0]["terminal"] == "error"
+    assert rows[0]["fallback"] == 0
+
+
+async def test_successful_stream_records_attempt_one(openai_model):
+    """未降级时弹性字段保持 1/0/0，不能因为引入降级把基线记脏。"""
+    storage = await Storage(":memory:").init()
+    service, _ = _build(openai_model, sse_transport(openai_sse(text="hi")), storage=storage)
+
+    async for _ in service.stream_sse(_validated()):
+        pass
+
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert rows[0]["attempt"] == 1
+    assert rows[0]["retry"] == 0
+    assert rows[0]["fallback"] == 0
+    assert rows[0]["disposition"] == ""
+
+
 async def test_successful_call_records_no_disposition(openai_model):
     storage = await Storage(":memory:").init()
     service, _ = _build(openai_model, _json_transport(_completion_body("hi")), storage=storage)

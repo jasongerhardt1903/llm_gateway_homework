@@ -7,24 +7,32 @@
 * 该行的 ``trace_id / run_id / step_id / call_id`` 串联即 Trace；
 * 对 ``requests`` 按时间窗聚合即 Metrics（QPS / p99 / 错误率）。
 
-另有 ``cost_ledger``（成本账本，独立成表以便按账期结算）与 ``model_health``
-（模型健康，供路由动态选择）。
+另有 ``cost_ledger``（成本账本，独立成表以便按账期结算）、``model_health``
+（模型健康，供路由动态选择）与 ``exchanges``（与后端 agent 的原始往来报文）。
+
+``exchanges`` 与 ``requests`` 刻意分开：前者是**通讯层**事实（agent 发来什么字节、
+网关回了什么字节），后者是**调用层**事实（翻译后的请求落到哪个模型、花了多少钱）。
+一次通讯可能对应 0 次或多次模型调用（校验失败时一次都没有），因此不能合成一张表。
+需求 Harness 层功能第 3 条要求日志"按 task id / 每次通讯的流程两个层级组合"，
+``(task_id, flow_index)`` 就是那两级。
 
 时间来自注入的 ``now`` 函数，因此窗口类指标可以被测试精确驱动，
 不需要真实等待。
 
-版本：0.2.0
+版本：0.8.4
 """
 
 from __future__ import annotations
 
 import json
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
 import aiosqlite
 
+from ..core.errors import redact_mapping, redact_text
 from ..core.telemetry import CallRecord
 
 __all__ = ["Storage"]
@@ -114,6 +122,25 @@ CREATE TABLE IF NOT EXISTS config (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS exchanges (
+    exchange_id   TEXT PRIMARY KEY,
+    task_id       TEXT NOT NULL DEFAULT '',
+    trace_id      TEXT NOT NULL DEFAULT '',
+    ts            REAL NOT NULL,
+    flow_index    INTEGER NOT NULL DEFAULT 1,
+    endpoint      TEXT NOT NULL DEFAULT '',
+    stream        INTEGER NOT NULL DEFAULT 0,
+    request_raw   TEXT NOT NULL DEFAULT '',
+    response_raw  TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'done',
+    error_code    TEXT,
+    error_message TEXT,
+    duration_ms   REAL NOT NULL DEFAULT 0,
+    meta          TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_exchanges_task ON exchanges(task_id);
+CREATE INDEX IF NOT EXISTS idx_exchanges_ts ON exchanges(ts);
 """
 
 
@@ -433,6 +460,132 @@ class Storage:
         rows = await cursor.fetchall()
         return [json.loads(row["payload"]) for row in rows]
 
+    # -- 通讯原始往来数据（需求 Harness 层功能第 3 条） ---------------------
+
+    async def save_exchange(
+        self,
+        *,
+        task_id: str,
+        request_raw: str | bytes = "",
+        response_raw: str = "",
+        trace_id: str = "",
+        endpoint: str = "",
+        stream: bool = False,
+        status: str = "done",
+        error_code: str | None = None,
+        error_message: str | None = None,
+        duration_ms: float = 0.0,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """落一条"与后端 agent 的通讯"。
+
+        ``flow_index`` 按 ``task_id`` 自增：同一个 task 可能来回多次（校验失败重发、
+        流式重连、多轮补充），需求要求按"task id / 每次通讯流程"两级组织，这个序号
+        就是第二级。
+
+        报文一律先脱敏：agent 可能在 metadata 里夹带自己的凭据，落进库里就等于
+        把凭据写到了磁盘上。
+        """
+        db = self._conn()
+        raw_request = request_raw.decode("utf-8", "replace") if isinstance(request_raw, bytes) else request_raw
+
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS n FROM exchanges WHERE task_id = ?", (task_id,)
+        )
+        row = await cursor.fetchone()
+        flow_index = int(row["n"] or 0) + 1
+
+        exchange = {
+            "exchange_id": f"ex-{uuid.uuid4().hex[:12]}",
+            "task_id": task_id,
+            "trace_id": trace_id or "",
+            "ts": self._now(),
+            "flow_index": flow_index,
+            "endpoint": endpoint,
+            "stream": stream,
+            "request_raw": redact_text(raw_request),
+            "response_raw": redact_text(response_raw),
+            "status": status,
+            "error_code": error_code,
+            "error_message": redact_text(error_message) if error_message else None,
+            "duration_ms": duration_ms,
+            "meta": redact_mapping(meta or {}),
+        }
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO exchanges (
+                exchange_id, task_id, trace_id, ts, flow_index, endpoint, stream,
+                request_raw, response_raw, status, error_code, error_message, duration_ms, meta
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                exchange["exchange_id"],
+                exchange["task_id"],
+                exchange["trace_id"],
+                exchange["ts"],
+                exchange["flow_index"],
+                exchange["endpoint"],
+                1 if stream else 0,
+                exchange["request_raw"],
+                exchange["response_raw"],
+                exchange["status"],
+                exchange["error_code"],
+                exchange["error_message"],
+                exchange["duration_ms"],
+                json.dumps(exchange["meta"], ensure_ascii=False, default=str),
+            ),
+        )
+        await db.commit()
+        return exchange
+
+    async def recent_exchanges(self, limit: int = 100) -> list[dict[str, Any]]:
+        """最近的通讯记录（新的在前）。"""
+        db = self._conn()
+        cursor = await db.execute(
+            "SELECT * FROM exchanges ORDER BY ts DESC, flow_index DESC LIMIT ?", (limit,)
+        )
+        return [_exchange_row(row) for row in await cursor.fetchall()]
+
+    async def exchanges_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        """某个 task 下的全部通讯，按流程顺序升序。"""
+        db = self._conn()
+        cursor = await db.execute(
+            "SELECT * FROM exchanges WHERE task_id = ? ORDER BY flow_index ASC", (task_id,)
+        )
+        return [_exchange_row(row) for row in await cursor.fetchall()]
+
+    async def search_exchanges(self, query: str, limit: int = 200) -> list[dict[str, Any]]:
+        """按字段搜通讯：task_id / trace_id / endpoint / 错误信息 / 两侧报文原文。
+
+        报文是原文检索（需求："可以按照各个字段进行搜索和展示"），因此模型名、错误码
+        这些出现在报文里的内容也能被搜到。
+        """
+        db = self._conn()
+        pattern = f"%{query}%"
+        cursor = await db.execute(
+            """
+            SELECT * FROM exchanges
+            WHERE task_id LIKE ?
+               OR trace_id LIKE ?
+               OR endpoint LIKE ?
+               OR COALESCE(error_code, '') LIKE ?
+               OR COALESCE(error_message, '') LIKE ?
+               OR request_raw LIKE ?
+               OR response_raw LIKE ?
+            ORDER BY ts DESC, flow_index DESC LIMIT ?
+            """,
+            (pattern, pattern, pattern, pattern, pattern, pattern, pattern, limit),
+        )
+        return [_exchange_row(row) for row in await cursor.fetchall()]
+
+    async def exchange(self, exchange_id: str) -> dict[str, Any] | None:
+        db = self._conn()
+        cursor = await db.execute("SELECT * FROM exchanges WHERE exchange_id = ?", (exchange_id,))
+        row = await cursor.fetchone()
+        return _exchange_row(row) if row is not None else None
+
+    # -- 模型健康 ----------------------------------------------------------
+
     async def model_health(self) -> list[dict[str, Any]]:
         db = self._conn()
         cursor = await db.execute(
@@ -465,3 +618,20 @@ class Storage:
         if row is None:
             return default
         return json.loads(row["value"])
+
+
+def _exchange_row(row: aiosqlite.Row) -> dict[str, Any]:
+    """把 exchanges 行转成接口直接可用的字典。
+
+    SQLite 没有布尔类型，入库时把 ``stream`` 存成了 0/1，出库还原成 ``bool``——
+    否则前端拿到的 ``stream`` 是数字，``v-if="ex.stream"`` 这类判断虽然能跑，
+    "原始 vs 流式"的语义却丢了。``meta`` 同理：库里是 JSON 字符串，出库还原成对象。
+    """
+    data = dict(row)
+    data["stream"] = bool(data.get("stream"))
+    raw_meta = data.get("meta") or "{}"
+    try:
+        data["meta"] = json.loads(raw_meta)
+    except (json.JSONDecodeError, TypeError):
+        data["meta"] = {}
+    return data

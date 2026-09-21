@@ -12,7 +12,7 @@ import pytest
 from llm_gw.adapter.factory import create_adapter
 from llm_gw.adapter.presets.registry import all_models, find_model
 from llm_gw.harness.retry import RetryPolicy
-from llm_gw.harness.service import GatewayService
+from llm_gw.harness.service import GatewayService, agent_router
 from llm_gw.harness.storage import Storage
 from llm_gw.router.registry import CapabilityRegistry
 from llm_gw.router.router import Router
@@ -20,7 +20,7 @@ from llm_gw.util.clock import FakeClock
 from llm_gw.web.api_models import ProfilePayload, profile_from_payload
 from llm_gw.web.app import create_web_app, restore_config
 
-from tests.support.mock_transport import client_for, openai_sse, sse_transport
+from tests.support.mock_transport import client_for, openai_sse, scripted_transport, sse_transport
 
 
 @pytest.fixture
@@ -66,7 +66,12 @@ def _build(model, transport, storage):
         clock=FakeClock(),
     )
     service = GatewayService(router, storage, clock=FakeClock())
-    return create_web_app(service, registry=registry, storage=storage), registry, router
+    app = create_web_app(service, registry=registry, storage=storage)
+    # 真实进程里控制台与 agent API 挂在同一个应用上（``runtime.create_runtime_app``）。
+    # 测试也照这个形态搭，Chat 页才能像需求要求的那样直连 ``/v1/tasks:stream``
+    # （管理与交互层功能第 7 条），而不必再经过控制台转发。
+    app.include_router(agent_router(service))
+    return app, registry, router
 
 
 async def _client(app) -> httpx.AsyncClient:
@@ -412,7 +417,9 @@ async def test_trace_search_and_detail(model, storage):
 
     async with await _client(app) as client:
         await client.post(
-            "/api/chat", json={"messages": [{"role": "user", "content": "hi"}], "stream": False}
+            "/v1/tasks",
+            json=_task_body(stream=False),
+            headers={"x-trace-id": "trace-r1"},
         )
         listing = await client.get("/api/traces")
         assert listing.status_code == 200
@@ -421,6 +428,7 @@ async def test_trace_search_and_detail(model, storage):
 
         detail = await client.get(f"/api/traces/{trace_id}")
 
+    assert trace_id == "trace-r1"
     assert detail.status_code == 200
     assert detail.json()["trace_id"] == trace_id
     assert len(detail.json()["calls"]) == 1
@@ -430,9 +438,7 @@ async def test_trace_search_filters_by_keyword(model, storage):
     app, _, _ = _build(model, _json_transport(_completion_body()), storage)
 
     async with await _client(app) as client:
-        await client.post(
-            "/api/chat", json={"messages": [{"role": "user", "content": "hi"}], "stream": False}
-        )
+        await client.post("/v1/tasks", json=_task_body(stream=False))
         hit = await client.get("/api/traces", params={"q": "gpt-4o-mini"})
         miss = await client.get("/api/traces", params={"q": "no-such-model"})
 
@@ -449,39 +455,258 @@ async def test_missing_trace_returns_404(model, storage):
 
 
 # --------------------------------------------------------------------------
-# Chat
+# agent API：Chat 页直连（需求管理与交互层功能第 7 条）
 # --------------------------------------------------------------------------
 
 
-async def test_chat_stream_proxies_sse(model, storage):
+def _task_body(*, stream: bool = True, task_id: str = "chat-1", content: str = "hi") -> dict:
+    """Chat 页按 agent 的 schema 构造请求体——控制台不再有 Chat 专属契约。"""
+    return {
+        "task_id": task_id,
+        "input": {"messages": [{"role": "user", "content": content}], "stream": stream},
+    }
+
+
+async def test_agent_stream_is_reachable_on_console_app(model, storage):
+    """Chat 页直连 ``/v1/tasks:stream``，日志页也据此采集原始往来。"""
     app, _, _ = _build(model, sse_transport(openai_sse(text="你好")), storage)
 
     async with await _client(app) as client:
-        response = await client.post(
-            "/api/chat/stream", json={"messages": [{"role": "user", "content": "hi"}]}
-        )
+        response = await client.post("/v1/tasks:stream", json=_task_body())
 
     assert response.status_code == 200
     assert "event: text_delta" in response.text
     assert "data: [DONE]" in response.text
 
 
-async def test_chat_stream_records_trace_with_chat_prefix(model, storage):
+async def test_agent_stream_records_trace_from_header(model, storage):
+    """trace_id 由调用方给出（Chat 页自造一个），网关照单落库，不再自己编 ``chat-`` 前缀。"""
     app, _, _ = _build(model, sse_transport(openai_sse(text="hi")), storage)
 
     async with await _client(app) as client:
-        await client.post("/api/chat/stream", json={"messages": [{"role": "user", "content": "hi"}]})
+        await client.post(
+            "/v1/tasks:stream", json=_task_body(), headers={"x-trace-id": "chat-ui-42"}
+        )
 
     calls = await storage.recent_calls()
-    assert calls[0]["trace_id"].startswith("chat-")
+    assert calls[0]["trace_id"] == "chat-ui-42"
 
 
-async def test_chat_rejects_empty_messages(model, storage):
+async def test_agent_task_rejects_empty_messages(model, storage):
     app, _, _ = _build(model, sse_transport(openai_sse()), storage)
     async with await _client(app) as client:
-        response = await client.post("/api/chat", json={"messages": []})
+        response = await client.post(
+            "/v1/tasks", json={"task_id": "t-1", "input": {"messages": [], "stream": False}}
+        )
 
     assert response.status_code == 422
+
+
+# --------------------------------------------------------------------------
+# agent 口令的网页配置（需求 Harness 层功能第 1 条）
+# --------------------------------------------------------------------------
+
+
+async def test_settings_reports_missing_password_without_echoing_it(model, storage):
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+    async with await _client(app) as client:
+        response = await client.get("/api/settings")
+
+    assert response.status_code == 200
+    assert response.json()["agent_password_source"] == "none"
+    assert response.json()["env_key"] == "LLM_GW_AGENT_PASSWORD"
+    # 口令本身不能被回显。
+    assert "password" not in response.json() or response.json().get("password") is None
+
+
+async def test_console_password_guards_agent_endpoints(model, storage):
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+    async with await _client(app) as client:
+        saved = await client.put("/api/settings/agent-password", json={"password": "s3cret"})
+        denied = await client.post("/v1/tasks:stream", json=_task_body())
+        allowed = await client.post(
+            "/v1/tasks:stream", json=_task_body(), headers={"authorization": "Bearer s3cret"}
+        )
+        # 控制台自己的 /api/* 不受口令保护，否则页面自己就打不开了。
+        console = await client.get("/api/models")
+
+    assert saved.json()["agent_password_source"] == "console"
+    assert denied.status_code == 401
+    assert denied.json()["detail"]["code"] == "AUTH_REQUIRED"
+    assert allowed.status_code == 200
+    assert console.status_code == 200
+
+
+async def test_console_password_persists_and_can_be_cleared(model, storage):
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+    async with await _client(app) as client:
+        await client.put("/api/settings/agent-password", json={"password": "s3cret"})
+        cleared = await client.put("/api/settings/agent-password", json={"password": ""})
+        reopened = await client.post("/v1/tasks:stream", json=_task_body())
+
+    assert cleared.json()["agent_password_source"] == "none"
+    assert reopened.status_code == 200
+    # 口令落 config 表，重启后不丢。
+    assert await storage.load_config("agent_password") is None
+
+
+async def test_env_password_wins_over_console(model, storage, monkeypatch):
+    monkeypatch.setenv("LLM_GW_AGENT_PASSWORD", "from-env")
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+    async with await _client(app) as client:
+        await client.put("/api/settings/agent-password", json={"password": "from-console"})
+        settings = await client.get("/api/settings")
+        wrong = await client.post(
+            "/v1/tasks:stream", json=_task_body(), headers={"authorization": "Bearer from-console"}
+        )
+        right = await client.post(
+            "/v1/tasks:stream", json=_task_body(), headers={"authorization": "Bearer from-env"}
+        )
+
+    assert settings.json()["agent_password_source"] == "env"
+    assert wrong.status_code == 401
+    assert right.status_code == 200
+
+
+# --------------------------------------------------------------------------
+# 通讯原始往来数据（需求 Harness 层功能第 3 条）
+# --------------------------------------------------------------------------
+
+
+async def test_exchanges_capture_raw_request_and_response(model, storage):
+    app, _, _ = _build(model, sse_transport(openai_sse(text="你好")), storage)
+
+    async with await _client(app) as client:
+        await client.post(
+            "/v1/tasks:stream", json=_task_body(task_id="t-raw"), headers={"x-trace-id": "tr-raw"}
+        )
+        response = await client.get("/api/exchanges", params={"task_id": "t-raw"})
+
+    rows = response.json()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["task_id"] == "t-raw"
+    assert row["trace_id"] == "tr-raw"
+    assert row["endpoint"] == "/v1/tasks:stream"
+    assert row["stream"] is True
+    assert row["status"] == "done"
+    # 原始报文：请求是 agent 发来的 JSON，响应是实际发出的 SSE 帧原文。
+    assert '"t-raw"' in row["request_raw"]
+    assert "event: text_delta" in row["response_raw"]
+    assert "data: [DONE]" in row["response_raw"]
+
+
+async def test_exchanges_flow_index_increments_per_task(model, storage):
+    """同一个 task 来回多次时按"每次通讯流程"编号——需求要求的两级组织。"""
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+
+    async with await _client(app) as client:
+        await client.post("/v1/tasks", json=_task_body(stream=False, task_id="t-flow"))
+        await client.post("/v1/tasks", json=_task_body(stream=False, task_id="t-flow"))
+        rows = (await client.get("/api/exchanges", params={"task_id": "t-flow"})).json()
+
+    assert [row["flow_index"] for row in rows] == [1, 2]
+    assert {row["endpoint"] for row in rows} == {"/v1/tasks"}
+
+
+async def test_non_stream_exchange_reports_terminal_state(model, storage):
+    """非流式：模型失败时 HTTP 仍是 200，但通讯日志的状态列要说实话。"""
+    app, _, _ = _build(
+        model,
+        scripted_transport([httpx.Response(401, json={"error": {"message": "bad key"}})]),
+        storage,
+    )
+
+    async with await _client(app) as client:
+        response = await client.post("/v1/tasks", json=_task_body(stream=False, task_id="t-term"))
+        rows = (await client.get("/api/exchanges", params={"task_id": "t-term"})).json()
+
+    assert response.status_code == 200
+    assert response.json()["terminal"] == "error"
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error_code"] == "AUTH_INVALID"
+    assert rows[0]["error_message"]
+
+
+async def test_exchange_detail_and_search(model, storage):
+    app, _, _ = _build(model, _json_transport(_completion_body("unique-token")), storage)
+
+    async with await _client(app) as client:
+        await client.post("/v1/tasks", json=_task_body(stream=False, task_id="t-search"))
+        listed = (await client.get("/api/exchanges")).json()
+        detail = await client.get(f"/api/exchanges/{listed[0]['exchange_id']}")
+        hit = (await client.get("/api/exchanges", params={"q": "t-search"})).json()
+        miss = (await client.get("/api/exchanges", params={"q": "no-such-thing"})).json()
+
+    assert detail.status_code == 200
+    assert detail.json()["exchange_id"] == listed[0]["exchange_id"]
+    assert len(hit) == 1
+    assert miss == []
+
+
+async def test_missing_exchange_returns_404(model, storage):
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+    async with await _client(app) as client:
+        response = await client.get("/api/exchanges/ex-nope")
+
+    assert response.status_code == 404
+
+
+async def test_exchanges_capture_schema_rejected_communication(model, storage):
+    """被两层校验挡下的通讯也要有记录：一次模型调用都没有，但原文最该看到。"""
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+
+    async with await _client(app) as client:
+        response = await client.post(
+            "/v1/tasks", json={"task_id": "t-bad", "input": {"messages": [], "stream": False}}
+        )
+        rows = (await client.get("/api/exchanges", params={"task_id": "t-bad"})).json()
+
+    assert response.status_code == 422
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["task_id"] == "t-bad"
+    assert row["endpoint"] == "/v1/tasks"
+    assert row["stream"] is False
+    assert row["status"] == "error"
+    assert row["error_code"] == "REQUEST_INVALID"
+    # 请求原文是 agent 发来的字节，响应原文是 FastAPI 回的 {"detail": ...}。
+    assert '"t-bad"' in row["request_raw"]
+    assert "REQUEST_INVALID" in row["response_raw"]
+
+
+async def test_exchanges_capture_rejected_communication_without_task_id(model, storage):
+    """取不到 task_id 的两种情形（JSON 不合法 / 结构里没带）归到空串一组，但都要留原文。"""
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+
+    async with await _client(app) as client:
+        syntax = await client.post(
+            "/v1/tasks:stream", content=b"{bad", headers={"content-type": "application/json"}
+        )
+        schema = await client.post("/v1/tasks", json={"input": {"messages": [], "stream": False}})
+        rows = (await client.get("/api/exchanges")).json()
+
+    assert (syntax.status_code, schema.status_code) == (400, 422)
+    assert len(rows) == 2
+    assert [row["task_id"] for row in rows] == ["", ""]
+    assert [row["error_code"] for row in rows] == ["REQUEST_INVALID"] * 2
+    assert {row["endpoint"] for row in rows} == {"/v1/tasks", "/v1/tasks:stream"}
+    assert {row["status"] for row in rows} == {"error"}
+    # 请求原文如实落盘：语法不合法的那条连 JSON 都不是。
+    assert {row["request_raw"] for row in rows} == {"{bad", '{"input":{"messages":[],"stream":false}}'}
+
+
+async def test_exchanges_redact_secrets(model, storage):
+    """报文脱敏：agent 在 metadata 里夹带凭据时不能原样落盘。"""
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+
+    async with await _client(app) as client:
+        body = _task_body(task_id="t-secret")
+        body["metadata"] = {"api_key": "sk-super-secret-value"}
+        await client.post("/v1/tasks:stream", json=body)
+        rows = (await client.get("/api/exchanges", params={"task_id": "t-secret"})).json()
+
+    assert "sk-super-secret-value" not in rows[0]["request_raw"]
 
 
 # --------------------------------------------------------------------------

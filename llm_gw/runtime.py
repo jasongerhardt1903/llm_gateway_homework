@@ -15,7 +15,11 @@
 ``env_key``）。密钥写入数据库但**不回显**到控制台——``model_to_payload`` 一律
 把它置为 ``None``，只回显"是否已配置"。
 
-版本：0.2.0
+同理，agent 接口口令既可在网页上配置（落 config 表），也可走环境变量
+``LLM_GW_AGENT_PASSWORD``；**环境变量优先**，容器化部署因此不必把口令写进
+``llm_gw.sqlite3``。
+
+版本：0.2.1
 """
 
 from __future__ import annotations
@@ -82,6 +86,9 @@ def create_runtime_app(*, db_path: str | None = None) -> FastAPI:
         await storage.init()
         # 恢复上次的模型清单与 gwprofile；config 表为空时保持 preset 默认值。
         await restore_config(registry, storage)
+        # 恢复控制台配置的 agent 口令（需求 Harness 层功能第 1 条）。环境变量仍然优先，
+        # 由 ``service.effective_password()`` 裁决。
+        await service.load_agent_password()
         try:
             yield
         finally:

@@ -1,23 +1,26 @@
-import { useEffect, useState } from "react";
-import { List, Search, Waypoints } from "lucide-react";
-import { getTrace, searchTraces } from "../api.js";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { List, Search, ScrollText, Waypoints } from "lucide-react";
+import { getTrace, listExchanges, parse_frame, searchTraces } from "../api.js";
 import { PageHeader } from "../components/ui/page-header.jsx";
 import { Card } from "../components/ui/card.jsx";
 import { DataTable } from "../components/ui/data-table.jsx";
+import { Table, TBody, Td, Th, THead, Tr } from "../components/ui/table.jsx";
 import { Alert } from "../components/ui/alert.jsx";
 import { Badge } from "../components/ui/badge.jsx";
 import { Button } from "../components/ui/button.jsx";
 import { Input } from "../components/ui/field.jsx";
 
 /**
- * Trace 页：结构化展示 + 关键字搜索 + 按任务分组的时间轴瀑布图。
+ * Trace 页：结构化展示 + 关键字搜索 + 按任务分组的时间轴瀑布图 + 通讯原始日志。
  *
- * 搜索命中后有两种视图：
+ * 搜索命中后有三种视图：
  * - 「列表」：逐条调用明细列表（表头可排序）；
  * - 「任务视图」：按 run_id（agent 的一次 task）分组，组内每次调用一根横条，
  *   条宽正比于 total_ms、TTFT 段用浅色标出、颜色按终态区分，组头给出任务级汇总。
+ * - 「通讯日志」：按 task_id / 每次通讯两级组合的原始往来报文（需求 Harness 层
+ *   第 3 条），可折叠展开，支持 raw / 渲染两种模式与按字段搜索。
  *
- * 两种视图点开某条都按 trace_id 拉取整条链路，按需求中的 8 个维度
+ * 前两种视图点开某条都按 trace_id 拉取整条链路，按需求中的 8 个维度
  * （关联 / Prompt / 路由 / 用量 / 延迟 / 弹性 / 结果 / 错误 / 成本）分组渲染，
  * 而不是把 JSON 原样倾倒。
  */
@@ -29,6 +32,15 @@ export default function TracePage() {
   const [error, setError] = useState("");
   const [view, setView] = useState("list");
 
+  // 通讯原始日志（需求 Harness 层第 3 条）的独立状态。
+  const [exKeyword, setExKeyword] = useState("");
+  const [exTaskId, setExTaskId] = useState("");
+  const [exchanges, setExchanges] = useState([]);
+  const [exLoading, setExLoading] = useState(false);
+  const [openGroups, setOpenGroups] = useState(() => new Set());
+  const [openRows, setOpenRows] = useState(() => new Set());
+  const exLoadedRef = useRef(false);
+
   const runSearch = async (value = keyword) => {
     try {
       setRows(await searchTraces(value));
@@ -39,9 +51,38 @@ export default function TracePage() {
     }
   };
 
+  const runExchangeSearch = async ({ q = exKeyword, taskId = exTaskId } = {}) => {
+    setExLoading(true);
+    try {
+      const list = await listExchanges({ q, taskId });
+      setExchanges(list);
+      // 默认展开所有 task 分组：日志页的目的是"看见往来内容"，全折叠等于什么都不显示。
+      setOpenGroups(new Set(group_exchanges(list).map((group) => group.task_id)));
+      setOpenRows(new Set());
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setExLoading(false);
+    }
+  };
+
   useEffect(() => {
     runSearch("");
   }, []);
+
+  // 第一次切到通讯日志视图时惰性加载，之后由搜索/筛选按钮驱动。
+  useEffect(() => {
+    if (view === "exchanges" && !exLoadedRef.current) {
+      exLoadedRef.current = true;
+      runExchangeSearch();
+    }
+  }, [view]);
+
+  const filter_by_task = (taskId) => {
+    setExTaskId(taskId);
+    runExchangeSearch({ taskId });
+  };
 
   const openTrace = async (traceId) => {
     try {
@@ -106,27 +147,68 @@ export default function TracePage() {
     },
   ];
 
+  /** 集合开关：折叠/展开分组或某条通讯时复用。 */
+  const toggle_in_set = (setter, key) =>
+    setter((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
   return (
     <div>
       <PageHeader
         title="Trace"
-        description="按 trace_id / call_id / 模型 / prompt 名 / 错误信息检索调用记录，并展开完整链路。"
+        description="按 trace_id / call_id / 模型 / prompt 名 / 错误信息检索调用记录，并展开完整链路或通讯原始日志。"
       />
 
       {error && <Alert className="mb-3">{error}</Alert>}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <Input
-          className="min-w-[260px] flex-1"
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && runSearch()}
-          placeholder="搜索 trace_id / call_id / 模型 / prompt 名 / 错误信息"
-        />
-        <Button onClick={() => runSearch()}>
-          <Search size={14} />
-          搜索
-        </Button>
+        {view === "exchanges" ? (
+          <>
+            <Input
+              className="min-w-[260px] flex-1"
+              value={exKeyword}
+              onChange={(e) => setExKeyword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && runExchangeSearch()}
+              placeholder="搜索通讯原文（request / response 内容）"
+            />
+            <Button onClick={() => runExchangeSearch()}>
+              <Search size={14} />
+              搜索
+            </Button>
+            {exTaskId && (
+              <>
+                <Badge tone="accent">task: {exTaskId}</Badge>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setExTaskId("");
+                    runExchangeSearch({ taskId: "" });
+                  }}
+                >
+                  清除筛选
+                </Button>
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <Input
+              className="min-w-[260px] flex-1"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && runSearch()}
+              placeholder="搜索 trace_id / call_id / 模型 / prompt 名 / 错误信息"
+            />
+            <Button onClick={() => runSearch()}>
+              <Search size={14} />
+              搜索
+            </Button>
+          </>
+        )}
         <div className="flex items-center gap-1 rounded-md border border-border p-0.5">
           <Button
             size="sm"
@@ -144,10 +226,28 @@ export default function TracePage() {
             <Waypoints size={12} />
             任务视图
           </Button>
+          <Button
+            size="sm"
+            variant={view === "exchanges" ? "primary" : "ghost"}
+            onClick={() => setView("exchanges")}
+          >
+            <ScrollText size={12} />
+            通讯日志
+          </Button>
         </div>
       </div>
 
-      {view === "list" ? (
+      {view === "exchanges" ? (
+        <ExchangeLog
+          exchanges={exchanges}
+          loading={exLoading}
+          openGroups={openGroups}
+          openRows={openRows}
+          onToggleGroup={(taskId) => toggle_in_set(setOpenGroups, taskId)}
+          onToggleRow={(id) => toggle_in_set(setOpenRows, id)}
+          onFilterTask={filter_by_task}
+        />
+      ) : view === "list" ? (
         <DataTable
           columns={columns}
           data={rows}
@@ -397,4 +497,267 @@ function format_time(value) {
   if (!value) return "—";
   const date = new Date(Number(value) * 1000);
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+/* ==========================================================================
+   通讯原始日志（需求 Harness 层第 3 条）
+   --------------------------------------------------------------------------
+   两级组合：第一级按 task_id 分组（可折叠），第二级是组内按 flow_index 升序的
+   每次通讯（可折叠）。每条通讯展开后有 request_raw / response_raw 两栏，可在
+   "原始"与"渲染后易读"两种模式间切换。
+   ========================================================================== */
+
+/** 第一级分组：按 task_id 聚合，组内按 flow_index 升序；记录组内最后一次时间。 */
+export function group_exchanges(list) {
+  const groups = new Map();
+  for (const item of list) {
+    const key = item.task_id || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return [...groups.entries()].map(([task_id, items]) => ({
+    task_id,
+    items: [...items].sort((a, b) => Number(a.flow_index ?? 0) - Number(b.flow_index ?? 0)),
+    last_ts: items.reduce((max, item) => Math.max(max, Number(item.ts ?? 0)), 0),
+  }));
+}
+
+/** 组头状态汇总：按 status 计数。 */
+export function status_summary(items) {
+  const counts = new Map();
+  for (const item of items) {
+    const key = item.status || "unknown";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([status, count]) => ({ status, count }));
+}
+
+/**
+ * 把 raw 文本归类成可读取的结构。
+ *
+ * JSON 报文直接美化；SSE 文本逐帧解析成"事件类型 + data"；两者都不像时按原文
+ * 显示——绝不因为解析失败就把内容吞掉。
+ */
+export function classify_payload(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed) return { kind: "empty" };
+  if (trimmed[0] === "{" || trimmed[0] === "[") {
+    try {
+      return { kind: "json", pretty: JSON.stringify(JSON.parse(trimmed), null, 2) };
+    } catch {
+      /* 不是合法 JSON，交给下面的 SSE 解析 */
+    }
+  }
+  const frames = parse_sse_frames(trimmed);
+  if (frames.length) return { kind: "sse", frames };
+  return { kind: "text", raw: trimmed };
+}
+
+/** 按空行分帧后复用 api.js 的 :func:`parse_frame`，避免两处各写一套规则。 */
+export function parse_sse_frames(text) {
+  const frames = [];
+  for (const block of String(text ?? "").split(/\n\n+/)) {
+    if (!block.trim()) continue;
+    const frame = parse_frame(block);
+    if (frame) frames.push(frame);
+  }
+  return frames;
+}
+
+/** SSE 的 data 是 JSON 时美化，否则原样返回。 */
+function pretty_data(data) {
+  try {
+    return JSON.stringify(JSON.parse(data), null, 2);
+  } catch {
+    return String(data ?? "");
+  }
+}
+
+/** 通讯日志区块：两级折叠 + 每条通讯的字段表格。 */
+function ExchangeLog({ exchanges, loading, openGroups, openRows, onToggleGroup, onToggleRow, onFilterTask }) {
+  if (loading && exchanges.length === 0) {
+    return <p className="text-sm text-muted">加载中…</p>;
+  }
+  if (exchanges.length === 0) {
+    return <p className="text-sm text-muted">没有匹配的通讯记录。</p>;
+  }
+
+  const groups = group_exchanges(exchanges);
+  return (
+    <div className="flex flex-col gap-3">
+      {groups.map((group) => {
+        const open = openGroups.has(group.task_id);
+        return (
+          <section key={group.task_id || "__unlabeled__"} className="task-group">
+            <header className="task-head">
+              <button
+                type="button"
+                onClick={() => onToggleGroup(group.task_id)}
+                className="flex cursor-pointer items-center gap-2 text-left"
+              >
+                <span className="text-muted">{open ? "▾" : "▸"}</span>
+                <span className="font-mono text-xs text-fg">
+                  {group.task_id || "未标记 task"}
+                </span>
+              </button>
+              <span className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
+                {group.items.length} 次通讯 · 最后 {format_time(group.last_ts)}
+                {status_summary(group.items).map(({ status, count }) => (
+                  <Badge key={status} tone={terminal_class(status)}>
+                    {status} {count}
+                  </Badge>
+                ))}
+                <Button variant="ghost" size="sm" onClick={() => onFilterTask(group.task_id)}>
+                  只看此任务
+                </Button>
+              </span>
+            </header>
+            {open && (
+              <ExchangeTable items={group.items} openRows={openRows} onToggleRow={onToggleRow} />
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 一条通讯一行、每字段一列；展开后在下一行给出 request / response 两栏原文。 */
+const EXCHANGE_COLUMNS = [
+  "#",
+  "endpoint",
+  "stream",
+  "status",
+  "error_code",
+  "trace_id",
+  "model",
+  "duration_ms",
+  "时间",
+  "操作",
+];
+
+function ExchangeTable({ items, openRows, onToggleRow }) {
+  return (
+    <Table>
+      <THead>
+        <Tr>
+          {EXCHANGE_COLUMNS.map((header) => (
+            <Th key={header}>{header}</Th>
+          ))}
+        </Tr>
+      </THead>
+      <TBody>
+        {items.map((ex) => {
+          const open = openRows.has(ex.exchange_id);
+          return (
+            <Fragment key={ex.exchange_id}>
+              <Tr>
+                <Td className="tabular">{ex.flow_index}</Td>
+                <Td className="font-mono text-xs">{ex.endpoint}</Td>
+                <Td>
+                  <Badge tone={ex.stream ? "accent" : "neutral"}>
+                    {ex.stream ? "流式" : "非流式"}
+                  </Badge>
+                </Td>
+                <Td>
+                  <Badge tone={terminal_class(ex.status)}>{ex.status}</Badge>
+                </Td>
+                <Td className="font-mono text-xs">{ex.error_code || "—"}</Td>
+                <Td className="font-mono text-xs">{ex.trace_id || "—"}</Td>
+                <Td>{ex.meta?.model || "—"}</Td>
+                <Td className="tabular">{round(ex.duration_ms)}</Td>
+                <Td className="whitespace-nowrap text-muted">{format_time(ex.ts)}</Td>
+                <Td>
+                  <Button variant="ghost" size="sm" onClick={() => onToggleRow(ex.exchange_id)}>
+                    {open ? "收起" : "展开报文"}
+                  </Button>
+                </Td>
+              </Tr>
+              {open && (
+                <Tr>
+                  <Td colSpan={EXCHANGE_COLUMNS.length}>
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      <RawPanel title="request_raw" text={ex.request_raw} />
+                      <RawPanel title="response_raw" text={ex.response_raw} />
+                    </div>
+                  </Td>
+                </Tr>
+              )}
+            </Fragment>
+          );
+        })}
+      </TBody>
+    </Table>
+  );
+}
+
+/** 单栏原始报文：raw 模式原样显示，渲染模式美化 JSON / 逐帧展开 SSE。 */
+function RawPanel({ title, text }) {
+  const [mode, setMode] = useState("raw");
+  const parsed = classify_payload(text);
+  return (
+    <div className="rounded-md border border-border-soft bg-raised p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="font-mono text-xs text-muted">{title}</span>
+        <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant={mode === "raw" ? "primary" : "ghost"}
+            onClick={() => setMode("raw")}
+          >
+            raw
+          </Button>
+          <Button
+            size="sm"
+            variant={mode === "render" ? "primary" : "ghost"}
+            onClick={() => setMode("render")}
+          >
+            渲染
+          </Button>
+        </div>
+      </div>
+      {mode === "raw" ? (
+        <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words text-xs text-fg2">
+          {text || "—"}
+        </pre>
+      ) : (
+        <RenderedPayload parsed={parsed} />
+      )}
+    </div>
+  );
+}
+
+function RenderedPayload({ parsed }) {
+  if (parsed.kind === "empty") {
+    return <p className="text-xs text-faint">（空）</p>;
+  }
+  if (parsed.kind === "json") {
+    return (
+      <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words text-xs text-fg2">
+        {parsed.pretty}
+      </pre>
+    );
+  }
+  if (parsed.kind === "sse") {
+    return (
+      <ol className="flex flex-col gap-1.5">
+        {parsed.frames.map((frame, index) => (
+          <li key={index} className="rounded-md border border-border-soft bg-panel px-2.5 py-1.5">
+            <Badge tone="accent">{frame.event || "message"}</Badge>
+            <pre className="mt-1 whitespace-pre-wrap break-words text-xs text-fg2">
+              {pretty_data(frame.data)}
+            </pre>
+          </li>
+        ))}
+      </ol>
+    );
+  }
+  return (
+    <div>
+      <p className="mb-1 text-xs text-warn">无法解析为 JSON / SSE，按原文显示。</p>
+      <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words text-xs text-fg2">
+        {parsed.raw || "—"}
+      </pre>
+    </div>
+  );
 }

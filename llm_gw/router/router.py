@@ -95,26 +95,32 @@ class Router:
             return self.retry_policy
         return RetryPolicy(enabled=profile.retry_enabled, max_retries=profile.max_retries)
 
-    def stream(self, task: Task) -> tuple[Decision, AssistantEventStream]:
+    def stream(
+        self, task: Task, *, model: Model | None = None
+    ) -> tuple[Decision, AssistantEventStream]:
         """按决策发起流式调用。
 
-        流式**不做跨模型降级**：一旦开始吐字，换模型重来就会产出重复内容
-        （需求：「已流式输出 → 不盲目重新生成」，处置为 ``FAIL``）。因此这里只用主
-        路由，降级决策留给调用方在首 delta 之前处理。
+        ``model`` 省略时用主路由。**流式不在流中间换模型**：一旦开始吐字，换模型重来
+        就会产出重复内容（需求：「已流式输出 → 不盲目重新生成」，处置为 ``FAIL``）。
+        但需求 adapter 层第 8 条要求"降级时按路由中可用模型执行"，因此 Harness 在
+        **首 delta 之前**发现可降级错误时，会用 ``model=decision.backup`` 再调一次本
+        方法，重开一条干净的流——这一次调用复用同一份 ``Decision``，避免重新路由选出
+        同一个已失败的模型。
         """
         if self._adapter_for is None:
             raise RuntimeError("Router 未配置 adapter_for，无法发起流式调用")
 
         decision = self.route(task)
-        if decision.primary is None:
+        target = decision.primary if model is None else model
+        if target is None:
             out = AssistantEventStream()
             out.push(ErrorEvent(reason="error", error=_error_message("ROUTE_NO_CANDIDATE: " + decision.reason)))
             return decision, out
 
-        adapter = self._adapter_for(decision.primary)
-        advanced = resolve_advanced(decision.primary, decision.profile)
-        options = self._options_for(decision.primary, advanced)
-        return decision, adapter.stream(decision.primary, task, options)
+        adapter = self._adapter_for(target)
+        advanced = resolve_advanced(target, decision.profile)
+        options = self._options_for(target, advanced)
+        return decision, adapter.stream(target, task, options)
 
     # -- 执行 --------------------------------------------------------------
 

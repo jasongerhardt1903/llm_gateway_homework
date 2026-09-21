@@ -1,8 +1,7 @@
 """Web API 的请求/响应模型。
 
 与内部类型分开定义：Web 的字段名与校验规则属于**对外契约**，不应随内部
-重构而变化。这里负责把 HTTP JSON 与内部 :class:`Model` / :class:`GwProfile`
-/ :class:`Task` 互转。
+重构而变化。这里负责把 HTTP JSON 与内部 :class:`Model` / :class:`GwProfile` 互转。
 
 两条安全约定：
 
@@ -10,18 +9,19 @@
   ``None``，只回显 ``api_key_set`` 这个布尔量。
 * ``api_key`` 为 ``None`` 表示"不修改已有密钥"；显式传空串才表示清除。
 
-版本：0.2.0
+Chat 页不再走控制台自己的请求契约（需求：管理与交互层功能第 7 条"Chat 模仿一个简单的
+后端 agent Loop，按照后端 agent 需要遵守的 schema 和 gateway 沟通"）。因此这里
+**没有** Chat 专用 payload：Chat 页直接以 :class:`Task` 的 schema 调 ``/v1/tasks:stream``。
+
+版本：0.3.0
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..core.advanced import THINKING_MODES, AdvancedConfig
 from ..core.messages import Capabilities, CostRates, Model
-from ..core.schema import TaskMessage, ToolSpec
 from ..router.profile import ROUTE_MODES, GwProfile, ProfileModelRef
 
 __all__ = [
@@ -31,7 +31,7 @@ __all__ = [
     "ModelPayload",
     "ProfileModelRefPayload",
     "ProfilePayload",
-    "ChatRequest",
+    "AgentPasswordPayload",
     "model_to_payload",
     "model_from_payload",
     "profile_to_payload",
@@ -173,19 +173,17 @@ class ProfilePayload(BaseModel):
         )
 
 
-class ChatRequest(BaseModel):
-    """Chat 页的请求体：profile + 对话内容。"""
+class AgentPasswordPayload(BaseModel):
+    """agent 接口口令的网页配置（需求 Harness 层功能第 1 条）。
+
+    ``password`` 允许为空串：空串与 ``None`` 都表示"清除口令、接口不再要求凭证"，
+    否则一旦设过口令就再也关不掉。口令**只写不回显**——状态接口只回
+    ``source``（env / console / none），不回口令本身。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    profile: str | None = None
-    messages: list[TaskMessage] = Field(min_length=1)
-    system: str | None = None
-    tools: list[ToolSpec] = Field(default_factory=list)
-    response_schema: dict[str, Any] | None = None
-    max_tokens: int | None = None
-    temperature: float | None = None
-    stream: bool = True
+    password: str | None = None
 
 
 def model_to_payload(model: Model) -> ModelPayload:

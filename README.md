@@ -1,7 +1,7 @@
 # LLM Gateway
 
 统一的大模型网关：为后端 agent 提供一致的 LLM 接入接口，并在内部完成
-**路由、降级、重试、流式、可观测**。当前版本 **0.8.3**（见 [CHANGELOG.md](CHANGELOG.md)）。
+**路由、降级、重试、流式、可观测**。当前版本 **0.8.4**（见 [CHANGELOG.md](CHANGELOG.md)）。
 
 架构上分五层，依赖方向单向（左依赖右）：
 
@@ -74,12 +74,12 @@ LLM_GW_HOST=0.0.0.0 ./run.sh  # 局域网可访问
 | `LLM_GW_DB` | `./llm_gw.sqlite3` | SQLite 数据库路径 |
 | `LLM_GW_HOST` | `127.0.0.1` | 监听地址（`0.0.0.0` 供局域网访问） |
 | `LLM_GW_PORT` | `8000` | 监听端口（也可用 `--port` 覆盖） |
-| `LLM_GW_AGENT_PASSWORD` | 空（不强制） | agent 接口（`/v1/tasks*`）口令。设置后要求 `Authorization: Bearer <password>`；未设置则放行 |
+| `LLM_GW_AGENT_PASSWORD` | 空（不强制） | agent 接口（`/v1/tasks*`）口令。设置后要求 `Authorization: Bearer <password>`；未设置则放行。**优先于**控制台网页上配置的口令 |
 | `OPENAI_API_KEY` 等 | 空 | 上游密钥，回退路径 |
 
 ## 控制台用法
 
-打开 `http://127.0.0.1:8000`，左侧导航五个入口：
+打开 `http://127.0.0.1:8000`，左侧导航六个入口：
 
 1. **模型定义** —— 增删改模型：供应商、实际模型 ID、base URL、上下文窗口、能力、成本；
    以及**高级配置项**（`temperature` / `top_p` / `top_k` / 工具调用轮数 / 思考模式）、
@@ -88,13 +88,21 @@ LLM_GW_HOST=0.0.0.0 ./run.sh  # 局域网可访问
 2. **Profile** —— 编组模型并配置路由。每个 profile 包含：
    - 模型清单，每个模型可勾选 **"本模型配置优先于模版"**；
    - 可选的**统一高级配置模版**（启用后，未勾选"优先"的模型一律用模版值）；
-   - **路由模式**：`dynamic`（动态打分）或 `static`（静态，用逗号分隔写死优先顺序）；
+   - **路由模式**：`dynamic`（动态打分）或 `static`（静态）。静态模式下的**路由表用拖拉拽
+     配置**：左侧是已选模型，拖到右侧组成路由链，右侧内部可上下拖拽排序，**执行自上而下**；
+     profile 名即路由表名；
    - 重试策略（是否重试、最大次数）。
-3. **Chat** —— 选一个 Profile（留空走全局模型池）后对话，实时消费 SSE 流；
+3. **Chat** —— 选一个 Profile（留空走全局模型池）后对话。Chat 页本就是"一个简单的后端
+   agent Loop"，因此**直接按 agent 的 `Task` schema 调 `/v1/tasks:stream`**，不再经过控制台
+   转发；页面上填 agent 口令（`Authorization: Bearer`），实时消费 SSE 流；
    `thinking_delta` 折叠展示，`error` / `cancelled` 终态标红且**不会**收到 `[DONE]`。
 4. **Dashboard** —— 聚合指标：QPS、p50/p99 延迟、错误率、成本、模型健康。
-5. **Trace** —— 按关键字（trace_id / call_id / 模型 / prompt 名 / 错误信息）搜索，
-   点开某条按 8 个维度查看整条链路（关联 / Prompt / 路由 / 用量 / 延迟 / 弹性 / 结果 / 错误 / 成本）。
+5. **Trace** —— 三种切法：按关键字（trace_id / call_id / 模型 / prompt 名 / 错误信息）搜索
+   调用记录，点开某条按 8 个维度查看整条链路；任务瀑布；以及**通讯原始日志**——按
+   `task_id` / 每次通讯流程两级折叠组织，每个字段一列，展开后可切换 **raw data 模式**
+   与**渲染后易读模式**（JSON 美化 / SSE 逐帧）。
+6. **设置** —— 配置 agent 接口口令（落 `config` 表）或清除；页面如实提示当前口令来源
+   （`env` / `console` / `none`）与对应的环境变量名。**环境变量优先于网页配置**。
 
 ## 测试
 

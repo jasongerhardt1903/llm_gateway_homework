@@ -1,13 +1,35 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import App from "../App.jsx";
-import { TaskWaterfall, bar_geometry, group_by_task } from "../pages/TracePage.jsx";
-import { streamChat } from "../api.js";
+import ChatPage from "../pages/ChatPage.jsx";
+import SettingsPage from "../pages/SettingsPage.jsx";
+import { ProfileForm, reorder } from "../pages/ProfilesPage.jsx";
+import {
+  TaskWaterfall,
+  bar_geometry,
+  classify_payload,
+  group_by_task,
+  group_exchanges,
+} from "../pages/TracePage.jsx";
+import * as api from "../api.js";
+import { streamTask } from "../api.js";
+
+/** 把若干字节片段包装成 fetch 的响应体。 */
+function respond_with(chunks) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return { ok: true, body: stream };
+}
 
 describe("控制台冒烟", () => {
-  it("渲染五个功能页签", () => {
+  it("渲染功能页签", () => {
     const html = renderToStaticMarkup(<App />);
-    for (const label of ["模型定义", "Profile", "Chat", "Dashboard", "Trace"]) {
+    for (const label of ["模型定义", "Profile", "Chat", "Dashboard", "Trace", "设置"]) {
       expect(html).toContain(label);
     }
   });
@@ -31,6 +53,102 @@ describe("控制台冒烟", () => {
     const html = renderToStaticMarkup(<App />);
     expect(html).toContain('value="openai-completions"');
     expect(html).toContain('value="anthropic-messages"');
+  });
+});
+
+describe("Chat 直连 agent 接口（需求 管理与交互层第 7 条）", () => {
+  it("api 暴露 streamTask，且不再暴露旧的 streamChat", () => {
+    expect(typeof api.streamTask).toBe("function");
+    // 旧的 /api/chat/stream 契约已删除，api.js 不应再导出它。
+    expect(api.streamChat).toBeUndefined();
+  });
+
+  it("Chat 页提供口令输入并提示口令来源", () => {
+    const html = renderToStaticMarkup(<ChatPage />);
+    expect(html).toContain("Agent 口令");
+    expect(html).toContain("连接配置");
+  });
+
+  it("请求落到 /v1/tasks:stream，并按需带上 Bearer 与 x-trace-id", async () => {
+    const fetch_mock = vi.fn(async () => respond_with([]));
+    vi.stubGlobal("fetch", fetch_mock);
+    await streamTask(
+      { task_id: "chat-1", input: { messages: [{ role: "user", content: "hi" }] } },
+      { password: "secret", traceId: "trace-1", onEvent: () => {} }
+    );
+    const [url, options] = fetch_mock.mock.calls[0];
+    expect(url).toBe("/v1/tasks:stream");
+    expect(options.headers.Authorization).toBe("Bearer secret");
+    expect(options.headers["x-trace-id"]).toBe("trace-1");
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("设置页（需求 Harness 层第 1 条）", () => {
+  it("展示口令来源与只写不回显 / 环境变量优先的说明", () => {
+    const html = renderToStaticMarkup(<SettingsPage />);
+    expect(html).toContain("Agent 接口口令");
+    expect(html).toContain("环境变量优先于网页配置");
+    expect(html).toContain("只写不回显");
+  });
+});
+
+describe("路由表拖拉拽编辑（需求 路由模块第 6 条）", () => {
+  it("静态模式下展示编辑器、路由表名称与自上而下执行说明", () => {
+    const html = renderToStaticMarkup(
+      <ProfileForm
+        models={[]}
+        initial={{ name: "rt", route_mode: "static", static_order: ["openai/gpt-4o"] }}
+        submitLabel="保存"
+        onSubmit={() => {}}
+      />
+    );
+    expect(html).toContain("路由表：rt");
+    expect(html).toContain("自上而下执行");
+    expect(html).toContain("全部可选模型");
+    expect(html).toContain("openai/gpt-4o");
+  });
+
+  it("动态模式下不出现顺序编辑器", () => {
+    const html = renderToStaticMarkup(
+      <ProfileForm
+        models={[]}
+        initial={{ name: "rt", route_mode: "dynamic" }}
+        submitLabel="保存"
+        onSubmit={() => {}}
+      />
+    );
+    expect(html).not.toContain("全部可选模型");
+    expect(html).toContain("动态路由由网关");
+  });
+
+  it("reorder 把第 from 项移动到第 to 位，同位原样返回", () => {
+    expect(reorder(["a", "b", "c"], 0, 2)).toEqual(["b", "c", "a"]);
+    expect(reorder(["a", "b", "c"], 2, 0)).toEqual(["c", "a", "b"]);
+    expect(reorder(["a", "b"], 1, 1)).toEqual(["a", "b"]);
+  });
+});
+
+describe("通讯原始日志（需求 Harness 层第 3 条）", () => {
+  it("按 task_id 两级分组，组内按 flow_index 升序并记录最后一次时间", () => {
+    const list = [
+      { task_id: "t1", flow_index: 2, ts: 20, status: "done", exchange_id: "e2" },
+      { task_id: "t1", flow_index: 1, ts: 10, status: "error", exchange_id: "e1" },
+      { task_id: "t2", flow_index: 1, ts: 5, status: "done", exchange_id: "e3" },
+    ];
+    const groups = group_exchanges(list);
+    expect(groups.map((g) => g.task_id)).toEqual(["t1", "t2"]);
+    expect(groups[0].items.map((i) => i.exchange_id)).toEqual(["e1", "e2"]);
+    expect(groups[0].last_ts).toBe(20);
+  });
+
+  it("classify_payload 区分 JSON / SSE / 纯文本", () => {
+    expect(classify_payload('{"a":1}').kind).toBe("json");
+    const sse = classify_payload("event: done\ndata: [DONE]");
+    expect(sse.kind).toBe("sse");
+    expect(sse.frames[0]).toEqual({ event: "done", data: "[DONE]" });
+    expect(classify_payload("").kind).toBe("empty");
+    expect(classify_payload("just text").kind).toBe("text");
   });
 });
 
@@ -110,18 +228,6 @@ describe("SSE 消费", () => {
     vi.unstubAllGlobals();
   });
 
-  /** 把若干字节片段包装成 fetch 的响应体。 */
-  function respond_with(chunks) {
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      start(controller) {
-        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
-        controller.close();
-      },
-    });
-    return { ok: true, body: stream };
-  }
-
   it("按事件解析 delta，遇到 [DONE] 停止且不把哨兵交给调用方", async () => {
     // 故意把一条事件拆成两个网络分片：解析必须按 buffer 累积，
     // 否则真实网络下会偶发丢事件。
@@ -136,7 +242,10 @@ describe("SSE 消费", () => {
     );
 
     const events = [];
-    await streamChat({ messages: [{ role: "user", content: "hi" }] }, { onEvent: (e) => events.push(e) });
+    await streamTask(
+      { task_id: "t1", input: { messages: [{ role: "user", content: "hi" }] } },
+      { onEvent: (e) => events.push(e) }
+    );
 
     expect(events).toHaveLength(2);
     expect(JSON.parse(events[0].data).delta).toBe("你好");
@@ -154,7 +263,10 @@ describe("SSE 消费", () => {
     );
 
     const events = [];
-    await streamChat({ messages: [{ role: "user", content: "hi" }] }, { onEvent: (e) => events.push(e) });
+    await streamTask(
+      { task_id: "t1", input: { messages: [{ role: "user", content: "hi" }] } },
+      { onEvent: (e) => events.push(e) }
+    );
 
     expect(events).toHaveLength(1);
     expect(events[0].event).toBe("error");
@@ -166,13 +278,17 @@ describe("SSE 消费", () => {
       "fetch",
       vi.fn(async () => ({
         ok: false,
-        status: 422,
-        text: async () => JSON.stringify({ detail: { code: "REQUEST_INVALID", message: "messages 不能为空" } }),
+        status: 401,
+        text: async () =>
+          JSON.stringify({ detail: { code: "AUTH_REQUIRED", message: "agent 接口口令无效" } }),
       }))
     );
 
     await expect(
-      streamChat({ messages: [{ role: "user", content: "hi" }] }, { onEvent: () => {} })
-    ).rejects.toThrow("messages 不能为空");
+      streamTask(
+        { task_id: "t1", input: { messages: [{ role: "user", content: "hi" }] } },
+        { onEvent: () => {} }
+      )
+    ).rejects.toThrow("agent 接口口令无效");
   });
 });

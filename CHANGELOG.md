@@ -2,6 +2,75 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.8.4
+
+按更新后的 `需求文档.md` 落五条新需求：流式降级、口令网页可配、通讯原始日志、
+控制台不再有 Chat 专属契约、路由表拖拉拽。
+
+### 变更
+
+- **R2 流式路径也降级**（`llm_gw/harness/service.py`、`llm_gw/router/router.py`）。
+  `Router.stream` 增加 `model=` 参数，允许 Harness 指定候选；`stream_sse` 的候选链是
+  `[主路由] + [备用路由]`，**换模型只发生在首个业务 delta 之前**——那时客户端一个业务
+  字节都没收到，重开一条流不会造成重复内容。一旦吐过业务 delta 就不再换模型（需求：
+  "已流式输出 → 不盲目重新生成"）。对外仍只有一个终态：被放弃的那条流的 `error` 事件
+  不转发。可降级的处置取 `DEGRADE` 与 `RETRY`（决策表对"首 Token 前"写的是"有限重试
+  **或** fall back"，流式不做同模型重试），`FAIL` 一律不换。落库的模型改为实际服务的
+  那个（`_record(..., model=)`），否则"降级到了哪个模型"会被记成没降级。
+- **R5 agent 口令可网页配置**（`llm_gw/harness/service.py`、`llm_gw/web/app.py`、
+  `llm_gw/runtime.py`）。新增 `GET /api/settings` 与 `PUT /api/settings/agent-password`，
+  口令落 `config` 表的 `agent_password` 键、启动时由 `load_agent_password()` 恢复。
+  **环境变量 `LLM_GW_AGENT_PASSWORD` 仍然优先**：口令是部署期凭据，容器化部署不必把它
+  写进 `llm_gw.sqlite3`。`/api/settings` 只回来源（`env`/`console`/`none`）与 `env_key`，
+  **不回显口令**。`require_agent_password` 由无参依赖改为工厂（闭包持有 service）。
+- **R4 通讯原始日志**（`llm_gw/harness/storage.py`、`llm_gw/harness/service.py`、
+  `llm_gw/web/app.py`）。新增 `exchanges` 表与 `save_exchange` / `recent_exchanges` /
+  `exchanges_for_task` / `search_exchanges` / `exchange`，对外新增
+  `GET /api/exchanges?q=&task_id=&limit=` 与 `GET /api/exchanges/{exchange_id}`。
+  与 `requests` 刻意分开：前者是**通讯层**事实（agent 发来什么字节、网关回什么字节），
+  后者是**调用层**事实（落到哪个模型、花了多少钱）；一次通讯可能对应 0 次模型调用
+  （两层校验失败时一次都没有，也照样记——agent 最常踩的就是 schema 错误，这类记录
+  连 `task_id` 都只能从原文里尽力抠）。按 `(task_id, flow_index)` 两级组织，`flow_index`
+  按 task 自增。两侧报文**先脱敏再落盘**（agent 可能在 metadata 里夹带自己的凭据）。
+  流式的 `response_raw` 是实际发出的 SSE 帧原文，被放弃的那条流的帧不进记录；客户端
+  断开时也会补一条 `cancelled` 记录——最需要排查的中断不该反而没有痕迹。状态列记的是
+  **通讯的真实结局**而非 HTTP 码：非流式调用模型失败时 HTTP 仍是 200（状态码只表达
+  "请求本身合法"），日志里落的是 `error` + 具体错误码，否则页面上一片绿色而正文全是错误。
+- **R1 控制台不再有 Chat 专属契约**（`llm_gw/web/app.py`、`llm_gw/web/api_models.py`、
+  `webapp/src/api.js`、`webapp/src/pages/ChatPage.jsx`）。删除
+  `POST /api/chat`、`POST /api/chat/stream`、`ChatRequest` 与 `_task_from_chat`：Chat 页
+  作为"一个简单的后端 agent Loop"直接按 agent 的 `Task` schema 调 `/v1/tasks:stream`
+  （需求管理与交互层功能第 7 条），控制台因此用的是与真实 agent **同一份**契约，
+  代理层带来的口径漂移随之消失。`vite.config.js` 补上 `/v1` 代理。
+- **R3 路由表拖拉拽**（`webapp/src/pages/ProfilesPage.jsx`）。「静态顺序」由逗号分隔的
+  文本框换成拖拉拽编辑器：左侧是 profile 已选模型，拖到右侧组成路由链，右侧内部可
+  上下拖拽排序（另有上移/下移按钮作为键盘可达的等价操作），**执行自上而下**；profile 名
+  即路由表名。用原生 HTML5 Drag & Drop，未引入新依赖。`static_order` 仍只在
+  `route_mode == "static"` 时提交。
+- 前端新增「设置」页（`webapp/src/pages/SettingsPage.jsx`）承载 R5；`TracePage.jsx`
+  新增「通讯日志」视图承载 R4 的双模式（raw data / 渲染后易读）与按字段搜索。
+- 版本号 `0.8.3` → `0.8.4`（`llm_gw/__init__.py`、`pyproject.toml`、
+  `webapp/package.json`、`webapp/src/styles.css`、`README.md`、
+  `llm_gw/web/app.py`、`llm_gw/harness/service.py`）。
+- 文档同步：`docs/interface.md` 第 2、4 节重写鉴权与通讯日志说明、删除 `/api/chat*`；
+  `README.md` 控制台用法改为六个入口。
+
+### 破坏性变更
+
+- `POST /api/chat` 与 `POST /api/chat/stream` **已删除**（404）。控制台自身已改为直连
+  `/v1/tasks:stream`；若有外部脚本依赖这两个路径，请改调 agent 接口。
+- `llm_gw.harness.service.agent_password` 模块级函数已删除，改为
+  `agent_password_from_env()`（另导出 `CONFIG_AGENT_PASSWORD`）。
+- `Router.stream(task)` 签名变为 `Router.stream(task, *, model=None)`；不传 `model`
+  时行为与之前一致（走 `decision.primary`）。
+- `ProfilePayload.static_order` 一直是数组，但 `docs/interface.md` 此前把它写成了逗号
+  分隔字符串，本次一并订正。
+
+### 测试
+
+- 后端 **389 passed**，覆盖率 **93%**（`service.py` 97%、`storage.py` 95%、`app.py` 91%）。
+- 前端 **24 passed**（vitest），`npm run build` 成功。
+
 ## 0.8.3
 
 **本次没有代码改动**，是一次版本标记：0.8.2 的 preset 换型号之后，用户库里遗留的

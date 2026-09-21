@@ -1,6 +1,12 @@
 # 测试证据
 
-> 本文件是 **v0.8.3** 的存档。v0.8.3 是一次版本标记（无代码改动）：0.8.2 的 preset
+> 本文件是 **v0.8.4** 的存档。v0.8.4 按更新后的 `需求文档.md` 落五条新需求：
+> **流式路径也降级**（首 delta 前换模型）、**agent 口令网页可配**（env 优先）、
+> **通讯原始日志**（`exchanges` 表 + `/api/exchanges`）、**控制台不再有 Chat 专属契约**
+> （删 `/api/chat*`，Chat 页直连 `/v1/tasks:stream`）、**路由表拖拉拽**。
+> 后端用例由 372 增至 **389**（`test_service.py` +5、`test_web_api.py` +12），
+> 覆盖率 **93%**；前端用例由 15 增至 **24**。
+> v0.8.3 是一次版本标记（无代码改动）：0.8.2 的 preset
 > 换型号被库里遗留的 `config` 表 `models` 行整体覆盖，清掉该行并重启后才真正生效，
 > 因此升补丁号以便从 `/api/meta` 直接分辨进程是否加载了新清单。用例数、覆盖率与
 > 接口契约均与 v0.8.2 相同（后端 **372**、前端 15，覆盖率 92%）。
@@ -41,12 +47,12 @@ $ .venv/bin/python -m pytest tests -p no:cacheprovider --cov=llm_gw --cov-report
 ```
 
 ```
-........................................................................ [ 19%]
-........................................................................ [ 39%]
-........................................................................ [ 58%]
-........................................................................ [ 78%]
-........................................................................ [ 98%]
-.......                                                                  [100%]
+........................................................................ [ 18%]
+........................................................................ [ 37%]
+........................................................................ [ 55%]
+........................................................................ [ 74%]
+........................................................................ [ 93%]
+..........................                                               [100%]
 ================================ tests coverage ================================
 _______________ coverage: platform darwin, python 3.13.9-final-0 _______________
 
@@ -69,47 +75,48 @@ llm_gw/adapter/structured.py                       134     25    81%   55-61, 12
 llm_gw/adapter/transform.py                         80      7    91%   81, 117-121, 136
 llm_gw/core/__init__.py                              0      0   100%
 llm_gw/core/advanced.py                             35      3    91%   55, 77-78
-llm_gw/core/errors.py                              252     36    86%   209, 261-262, 282-284, 294-295, 303, 307, 311-315, 358, 362, 376-377, 388, 407, 411, 424, 436-437, 503, 510, 512, 516, 519-520, 525-528, 562, 588
-llm_gw/core/events.py                              155      7    95%   207, 244-245, 285, 292, 302, 315
+llm_gw/core/errors.py                              252     29    88%   209, 261-262, 282-284, 294-295, 303, 307, 311-315, 358, 362, 376-377, 388, 407, 411, 424, 503, 510, 512, 516, 526, 588
+llm_gw/core/events.py                              155      6    96%   207, 244-245, 292, 302, 315
 llm_gw/core/json_utils.py                          191     14    93%   45, 141-142, 145, 184-185, 188, 197, 263-264, 267, 279, 289, 306
-llm_gw/core/messages.py                            124      2    98%   192, 194
+llm_gw/core/messages.py                            124      1    99%   192
 llm_gw/core/schema.py                              115      6    95%   111, 142, 144, 175, 214-215
 llm_gw/core/telemetry.py                            57      0   100%
 llm_gw/harness/__init__.py                           0      0   100%
 llm_gw/harness/decisions.py                         14      1    93%   53
 llm_gw/harness/query.py                             20      0   100%
 llm_gw/harness/retry.py                            128     18    86%   98-99, 104-114, 136, 145, 147, 174, 207
-llm_gw/harness/service.py                          128      6    95%   208-212, 244
+llm_gw/harness/service.py                          224      6    97%   113, 268, 439, 453-454, 486
 llm_gw/harness/sse.py                               80      8    90%   97-103, 126
-llm_gw/harness/storage.py                          133      7    95%   134, 161, 164, 168, 269, 334, 398
+llm_gw/harness/storage.py                          172      9    95%   161, 188, 191, 195, 296, 361, 425, 635-636
 llm_gw/router/__init__.py                            0      0   100%
 llm_gw/router/profile.py                            68      4    94%   79, 104, 140, 154
 llm_gw/router/registry.py                           60      3    95%   75, 91, 111
-llm_gw/router/router.py                            120     13    89%   106, 110-112, 136, 141-142, 166, 179, 210, 244, 248-249
+llm_gw/router/router.py                            121     13    89%   111, 116-118, 142, 147-148, 172, 185, 216, 250, 254-255
 llm_gw/router/rules.py                              75      0   100%
-llm_gw/runtime.py                                   49      1    98%   112
+llm_gw/runtime.py                                   50      1    98%   119
 llm_gw/util/__init__.py                              0      0   100%
 llm_gw/util/clock.py                                22      2    91%   34-35
 llm_gw/web/__init__.py                               0      0   100%
-llm_gw/web/api_models.py                            93      1    99%   142
-llm_gw/web/app.py                                  237     26    89%   131, 167, 198, 201-202, 222, 233, 241, 281-282, 327-328, 342, 351, 363-364, 369, 377, 425, 427, 429, 431, 433, 435, 446, 453
+llm_gw/web/api_models.py                            84      1    99%   142
+llm_gw/web/app.py                                  237     22    91%   139, 175, 206, 209-210, 230, 241, 249, 290, 300, 317-318, 363-364, 378, 387, 399-400, 405, 413, 456, 463
 ------------------------------------------------------------------------------
-TOTAL                                             3212    258    92%
-372 passed in 2.18s
+TOTAL                                             3340    246    93%
+389 passed in 2.49s
 ```
 
-**372 passed，0 failed，92% 覆盖率。**
+**389 passed，0 failed，93% 覆盖率。**
 
-本轮改动的模块覆盖率：`adapter/discovery.py` 94%（含新增的清单缓存）、
-`web/app.py` 89%、`util/clock.py` 91%、`core/telemetry.py` 100%、
-`harness/decisions.py` 93%、`router/router.py` 89%、`harness/service.py` 95%、
-`core/errors.py` 86%。
+本轮改动的模块覆盖率：`harness/service.py` 97%（流式降级 + 口令网页配置 +
+被校验挡下的通讯也落 exchanges）、`harness/storage.py` 95%（`exchanges` 表与四个查询方法）、
+`web/app.py` 91%（`/api/settings*` 与 `/api/exchanges*`，并删除了 `/api/chat*`）、
+`web/api_models.py` 99%、`runtime.py` 98%、`router/router.py` 89%。
 
-`discovery.py` 未覆盖的 6 行（231-232、279-280、293、297）都是错误兜底分支：
-上游返回非 JSON、缺 `data` 数组、以及通用异常——这些分支的目标行为是"回退到内置
-preset 清单并如实回报 `error`"，已由 `test_provider_models_falls_back_to_preset`
-（HTTP 500）与 `test_provider_models_reports_unparsable_response`（非 JSON / 缺
-`data`）覆盖同一批错误路径，未再为每个错误子类型各写一例。
+`harness/service.py` 未覆盖的 6 行都是防御性分支：113（未注入存储时的
+`load_agent_password` 提前返回）、268（候选链至少含一项时的兜底）、
+439（口令未配置时直接放行的提前返回之外的同一条分支）、453-454（`HTTPException`
+的构造参数元组断行）、486（未注入存储时的 `_record` 提前返回）。
+`web/app.py` 新增端点里未覆盖的只有 290 与 300——未注入存储时的 503 分支，
+与既有 `/api/traces` 的同类分支一致，不重复造用例。
 
 ## 2. 按文件分布
 
@@ -128,16 +135,16 @@ preset 清单并如实回报 `error`"，已由 `test_provider_models_falls_back_
 | `tests/core/test_telemetry.py` | 5 | |
 | `tests/harness/test_agent_auth.py` | 7 | v0.7.0：agent 接口口令鉴权 |
 | `tests/harness/test_observability.py` | 17 | |
-| `tests/harness/test_service.py` | 14 | |
+| `tests/harness/test_service.py` | 19 | **+5（v0.8.4：流式降级）** |
 | `tests/router/test_profile.py` | 29 | |
 | `tests/router/test_profile_routing.py` | 24 | |
 | `tests/router/test_retry.py` | 21 | |
 | `tests/router/test_router.py` | 20 | |
 | `tests/web/test_model_discovery.py` | 21 | **+5（v0.8.1：清单缓存）**；v0.8.0 建此文件（16 例） |
-| `tests/web/test_web_api.py` | 28 | |
+| `tests/web/test_web_api.py` | 40 | **+12（v0.8.4：口令网页配置、通讯日志、Chat 直连）** |
 | `tests/test_phase0_infra.py` | 4 | |
 | `tests/test_runtime.py` | 11 | v0.7.0：agent API 与控制台同进程共存 |
-| **合计** | **372** | **0（v0.8.2：仅换 preset 数据）** |
+| **合计** | **389** | **+17（v0.8.4）** |
 
 ## 3. 需求要求的六类测试
 
@@ -201,10 +208,10 @@ $ cd webapp && npm test
  RUN  v2.1.9 webapp
 
  ✓ src/__tests__/model-catalog.test.js (5 tests) 2ms
- ✓ src/__tests__/smoke.test.jsx (10 tests) 19ms
+ ✓ src/__tests__/smoke.test.jsx (19 tests) 22ms
 
  Test Files  2 passed (2)
-      Tests  15 passed (15)
+      Tests  24 passed (24)
 ```
 
 覆盖：五个页签渲染（含 Profile 页）、默认页、SSE 事件解析（含**事件被拆到两个网络分片**的场景）、`[DONE]` 不作为业务事件透出、`error` 终态仍交付、HTTP 错误抛出后端 `detail`；以及 v0.4.0 新增的任务瀑布图三例——按 `run_id` 分组（空值归入「未标记任务」、组内时间正序且不改动入参）、条宽相对全局最长调用与 TTFT 占比（含 `total_ms=0` 的最小宽度与除零保护）、分组渲染的汇总文案与终态配色。
@@ -235,10 +242,24 @@ v0.8.0 新增 7 例（前 8 例**断言未做任何修改**，继续通过）：
 ```bash
 $ cd webapp && npm run build
 dist/index.html                   0.40 kB │ gzip:   0.29 kB
-dist/assets/index-DXkklhHf.css   21.08 kB │ gzip:   5.18 kB
-dist/assets/index-DGxRZPiM.js   662.30 kB │ gzip: 197.29 kB
-✓ built in 2.04s
+dist/assets/index-B7UFdmio.css   21.37 kB │ gzip:   5.26 kB
+dist/assets/index-B-hfpgvn.js   676.14 kB │ gzip: 201.58 kB
+✓ built in 1.99s
 ```
+
+v0.8.4 新增 9 例（`smoke.test.jsx` 10 → 19；既有 10 例断言未做修改）：
+
+| 用例 | 断言要点 |
+|---|---|
+| 「api 暴露 streamTask，且不再暴露旧的 streamChat」 | Chat 直连 agent 接口后，控制台的 `streamChat` 必须消失——留着它等于留着一条已 404 的路径 |
+| 「Chat 页提供口令输入并提示口令来源」 | Chat 页要有填 agent 口令的地方（直连 `/v1/tasks:stream` 需要 Bearer），且能看出口令来自 env / console / none |
+| 「请求落到 /v1/tasks:stream，并按需带上 Bearer 与 x-trace-id」 | 用假 `fetch` 断言 URL、鉴权头、trace 头，以及请求体是 agent 的 `Task` schema（`input.messages`），确保没有偷偷回到 `/api/chat/stream` |
+| 「展示口令来源与只写不回显 / 环境变量优先的说明」 | 设置页静态渲染即出现口令来源、环境变量名与"环境变量优先"的说明 |
+| 「静态模式下展示编辑器、路由表名称与自上而下执行说明」 | 拖拉拽编辑器只在 `route_mode === "static"` 时出现，并显示路由表名称（profile 名）与执行方向 |
+| 「动态模式下不出现顺序编辑器」 | `dynamic` 模式不给手工顺序（由网关按能力/健康度挑选） |
+| 「`reorder` 把第 from 项移动到第 to 位，同位原样返回」 | 列表内部拖拽排序的纯函数：前移 / 后移 / 原地不动 / 越界不动 |
+| 「按 task_id 两级分组，组内按 flow_index 升序并记录最后一次时间」 | 通讯日志的第一级是 task、第二级是每次通讯流程 |
+| 「`classify_payload` 区分 JSON / SSE / 纯文本」 | raw 模式与渲染模式的切换依据：JSON 美化、SSE 逐帧、其余回退原文 |
 
 > 体积增长来自 Recharts / TanStack Table / lucide-react；后端仍以同源方式托管
 > `webapp/dist`，未新增任何运行时服务。
@@ -497,6 +518,105 @@ openai:    0.000873s   # 回到 openai → 命中
 > （含"测试连接"）就会以"未知的 API 协议"失败。已改为协议 ID，并加
 > `smoke.test.jsx`「协议下拉的值是 adapter 的协议 ID」把它固化下来。
 
+### 6.7 口令网页配置、Chat 直连、通讯原始日志（v0.8.4）
+
+本轮五条需求里有四条改的是**装配层事实**（依赖挂载、路由是否存在、落库字段），
+单元测试只能证明函数行为，证明不了"真实进程里这个端点真的在、旧的真的没了"。
+因此照旧起一个真实 uvicorn：
+
+```bash
+$ LLM_GW_DB=/tmp/v084c.sqlite3 .venv/bin/python -m uvicorn \
+    llm_gw.runtime:create_runtime_app --factory --port 8051
+```
+
+| 请求 | 结果 |
+|---|---|
+| `GET /health` | `200`，`{"status":"ok"}` |
+| `GET /api/meta` | `version="0.8.4"`，`changelog` 含 `## 0.8.4` 小节 |
+| `POST /api/chat/stream` | **`404`**——控制台的 Chat 专属契约（`ChatRequest`）已删除 |
+| `GET /api/settings`（未配口令） | `{"agent_password_set":false,"agent_password_source":"none","env_key":"LLM_GW_AGENT_PASSWORD"}` |
+| `PUT /api/settings/agent-password`（`{"password":"s3cret"}`） | `{"agent_password_set":true,"agent_password_source":"console",...}` |
+| 同上（`{"password":null}`） | 回到 `agent_password_source":"none"`——清除路径可用 |
+| `POST /v1/tasks:stream`（无 `Authorization`） | `401`，`{"detail":{"code":"AUTH_REQUIRED","message":"agent 接口口令无效"}}` |
+| `POST /v1/tasks`（`Bearer s3cret`，body `{bad`） | `400`，`REQUEST_INVALID` + `malformed JSON at line 1 column 2: ...` |
+| `POST /v1/tasks:stream`（`Bearer s3cret`，`messages: []`） | `422`，`REQUEST_INVALID` + `input.messages: List should have at least 1 item ...` |
+| `POST /v1/tasks:stream`（`Bearer s3cret`，合法 Task） | `200`，SSE 正常吐出（本机密钥失效，故为 `event: error`） |
+
+两条关键证据：
+
+1. **`/api/chat/stream` 返回 404 而不是 401/422**：这条路由是**真的不存在**，而不是
+   "存在但拒绝"——需求 R1 要的就是控制台不再持有 Chat 专属契约，Chat 页按 agent 的
+   `Task` schema 自己调 `/v1/tasks:stream`。页面能通，靠的是同一进程里挂着的 agent 路由。
+2. **口令未配时不设防、配了就用，且 env 优先**：`GET /api/settings` 只回"是否已配 /
+   来源 / 环境变量名"，**不回显口令本身**；`source` 从 `none` → `console` 的变化说明
+   写库生效（重启后由 `load_agent_password` 恢复）。env 优先这一支由
+   `tests/web/test_web_api.py::test_env_password_wins_over_console` 固化，不在真实进程里
+   反复改环境变量。
+
+**通讯原始日志**（R4）也在同一进程里验证——这是本轮唯一新增的落库表，必须看到真数据：
+
+```bash
+$ curl -s "localhost:8051/api/exchanges" | ...
+ui-2         flow=1 /v1/tasks:stream stream=True  error    REQUEST_INVALID  model=None
+             flow=1 /v1/tasks        stream=False error    REQUEST_INVALID  model=None
+ui-1         flow=1 /v1/tasks:stream stream=True  error    AUTH_INVALID     model=deepseek/deepseek-flash
+flow-demo    flow=2 /v1/tasks        stream=False error    AUTH_INVALID     model=None
+flow-demo    flow=1 /v1/tasks        stream=False error    AUTH_INVALID     model=None
+```
+
+同一 `task_id` 连发两次 → `flow_index` 依次为 `1`、`2`，这就是"按 task id / 每次通讯流程
+两级组合"的后端依据（前端 Trace 页据此折叠分组）。流式那次则完整留下了**双向原文**：
+
+```
+task_id  : ui-1            trace_id : chatui-7        endpoint : /v1/tasks:stream  stream : true
+request_raw : {"task_id":"ui-1","input":{"messages":[{"role":"user","content":"hi"}]}}
+response_raw: event: error\ndata: {"type": "error", ... "error_message": "AUTH_INVALID: provider (401): ..."}\n\n
+status   : error           error_code : AUTH_INVALID          duration_ms : 422
+meta     : {"model":"deepseek/deepseek-flash","profile":"",
+            "degraded_from":"openai/gpt-4o-mini","degraded_to":"deepseek/deepseek-flash"}
+```
+
+四点值得记下：
+
+- `response_raw` 是**实际发出的 SSE 帧原文**（带 `event:` / `data:` 行），不是渲染后的
+  结果——页面里的 raw data 模式直接显示它，易读模式再解析成"逐帧 + JSON 美化"。
+- 本机 OpenAI 密钥失效，主路由 `gpt-4o-mini` 收到 `AUTH_INVALID`，**在首个 delta 之前**
+  就降级到了 `deepseek/deepseek-flash`（R2）；`meta` 把 `degraded_from` / `degraded_to`
+  如实记下，而 `requests` 表里那次调用的 `model` 也是 `deepseek-flash` 而非主路由——
+  两张表在"这次到底用了谁"上口径一致。
+- **被两层校验挡下的通讯也有一条记录**（最前两行）：`ui-2` 因 `messages: []` 得 422，
+  `task_id` 从原文里抠出来照常归组；`{bad` 那条连 JSON 都不合法，`task_id` 为空串：
+
+  ```
+  task_id: 'ui-2' | endpoint: /v1/tasks:stream | status: error
+    request_raw : {"task_id":"ui-2","input":{"messages":[]}}
+    response_raw: {"detail": {"code": "REQUEST_INVALID", "message": "task does not match schema: ..."}}
+  task_id: ''     | endpoint: /v1/tasks        | status: error
+    request_raw : {bad
+    response_raw: {"detail": {"code": "REQUEST_INVALID", "message": "malformed JSON at line 1 column 2: ..."}}
+  ```
+
+  这两条**一次模型调用都没有**，`requests` 表里没有任何行；而 agent 最常踩的恰恰是
+  schema 错误，"我到底发了什么"只有通讯日志看得到，所以不能因为"没进路由"就不记。
+- 两张表的字段口径由此显现：`requests` 答的是"这次调用落到哪个模型、花了多少钱"，
+  `exchanges` 答的是"agent 发来什么字节、网关回了什么字节"——**双向原始报文只有后者有**，
+  一次通讯也未必对应一次模型调用，因此不能合成一张表。
+
+非流式路径的 `response_raw` 是网关对外回的 JSON 原文，`warnings` 一并落库；**状态列不是
+照抄 HTTP 码**——模型调用失败时 HTTP 仍是 `200`（状态码只表达"请求本身合法"），日志里记的
+是 `error` + `AUTH_INVALID`，否则页面上一片绿色而正文全是错误：
+
+```bash
+$ curl -s "localhost:8051/api/exchanges" | ...   # flow-demo 那两条
+endpoint=/v1/tasks stream=False status=error error_code=AUTH_INVALID
+response_raw: {"task_id": "flow-demo", "stop_reason": "error", "terminal": "error", "text": "",
+               "error_message": "AUTH_INVALID: ...",
+               "warnings": ["AUTH_INVALID: 已降级 openai/gpt-4o-mini → deepseek/deepseek-flash；…"]}
+```
+
+> 接口形状提醒：`GET /api/exchanges` 返回的是**裸数组**（`/api/traces` 亦然），不是
+> `{"items": [...]}` 信封；`task_id` 与 `q` 同时给出时以 `task_id` 为准。
+
 ## 7. 复现方式
 
 ```bash
@@ -511,7 +631,7 @@ cd webapp && npm install && npm test
 .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
 ```
 
-所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试与缓存过期测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 372 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级，因此**也不需要有效密钥**）。
+所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试与缓存过期测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 389 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级；6.7 同理会真的打一次上游并收到 401，因此**也不需要有效密钥**）。
 
 > 复现 v0.8.2 的 preset 验证时，记得用干净库（`LLM_GW_DB=/tmp/fresh.sqlite3`）：用默认的
 > `llm_gw.sqlite3` 会被里面已保存的模型清单覆盖，看到的仍是旧型号，详见第 6.6 节。

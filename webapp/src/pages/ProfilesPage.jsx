@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Pencil, Plus, Trash2, X } from "lucide-react";
 import { createProfile, deleteProfile, listModels, listProfiles, updateProfile } from "../api.js";
 import { PageHeader } from "../components/ui/page-header.jsx";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/card.jsx";
@@ -22,7 +22,7 @@ import {
  * 一个 profile 定义三件事：
  * 1. **模型编组**：包含哪些模型（勾选加入），并对每个模型选择"本模型配置优先于模版"；
  * 2. **高级配置模版**：在 profile 内生效的统一配置，可整份启用/停用；
- * 3. **路由配置**：动态 / 静态二选一，静态用逗号分隔的优先顺序。
+ * 3. **路由配置**：动态 / 静态二选一，静态用拖拉拽编辑器定义自上而下的执行顺序。
  *
  * 重试次数也挂在 profile 上（需求第 128 行），因此一并在这里维护。
  */
@@ -225,11 +225,11 @@ const TEMPLATE_NUMBERS = [
   ["max_tool_rounds", "工具调用轮数"],
 ];
 
-function ProfileForm({ models, initial = {}, submitLabel, onSubmit }) {
+export function ProfileForm({ models, initial = {}, submitLabel, onSubmit }) {
   // 先把编辑态的一种表达（checked / unchecked 都没关系）转成并列表单状态。
   const [form, setForm] = useState(() => normalize(initial));
-  // 静态顺序用独立文本状态：边输入边解析会把用户正在敲的逗号吃掉。
-  const [staticText, setStaticText] = useState(() => (initial.static_order ?? []).join(", "));
+  // 静态顺序单独持有：拖拉拽编辑器直接操作这个数组（元素是 model label）。
+  const [staticOrder, setStaticOrder] = useState(() => [...(initial.static_order ?? [])]);
 
   function normalize(p) {
     const selected = (p.models ?? []).map((m) => m.label);
@@ -286,8 +286,8 @@ function ProfileForm({ models, initial = {}, submitLabel, onSubmit }) {
       route_mode: form.route_mode,
       retry_enabled: form.retry_enabled,
       max_retries: form.max_retries,
-      static_order:
-        form.route_mode === "static" ? static_text_to_list(staticText) : [],
+      // 静态顺序只在静态模式下有意义，动态模式一律提交空数组。
+      static_order: form.route_mode === "static" ? staticOrder : [],
     };
     onSubmit(payload);
   };
@@ -379,7 +379,7 @@ function ProfileForm({ models, initial = {}, submitLabel, onSubmit }) {
       </div>
 
       <div>
-        <FieldLabel>路由配置（需求第 31 行：动态 / 静态二选一）</FieldLabel>
+        <FieldLabel>路由配置（需求"路由模块"第 6 条：拖拉拽配置，自上而下执行）</FieldLabel>
         <FormRow>
           <Field label="路由模式" className="w-[170px]">
             <Select
@@ -390,16 +390,19 @@ function ProfileForm({ models, initial = {}, submitLabel, onSubmit }) {
               <option value="static">静态路由</option>
             </Select>
           </Field>
-          {form.route_mode === "static" && (
-            <Field label="优先顺序（逗号分隔，主 → 备）" className="min-w-[280px] flex-1">
-              <Input
-                value={staticText}
-                onChange={(e) => setStaticText(e.target.value)}
-                placeholder="openai/gpt-4o-mini, deepseek/deepseek-flash"
-              />
-            </Field>
-          )}
         </FormRow>
+        {form.route_mode === "static" ? (
+          <RouteOrderEditor
+            title={`路由表：${form.name || "（未命名）"}`}
+            pool={form.model_labels}
+            order={staticOrder}
+            onChange={setStaticOrder}
+          />
+        ) : (
+          <p className="mt-3 text-sm text-muted">
+            动态路由由网关按模型能力与健康度自动挑选，不使用手工顺序；需要手工指定顺序时请切换为静态路由。
+          </p>
+        )}
       </div>
 
       <div>
@@ -437,11 +440,132 @@ function number_or_null(value) {
   return value === "" || value === null || value === undefined ? null : Number(value);
 }
 
-/** "a, b，c" → ["a","b","c"]：全角/半角逗号与顿号都算分隔符。 */
-function static_text_to_list(text) {
-  return String(text ?? "")
-    .replace(/[，、]/g, ",")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+/**
+ * 路由表拖拉拽编辑器（需求"路由模块"第 6 条）。
+ *
+ * 左侧 = profile 里已选的模型引用（拖拽来源），右侧 = 静态路由顺序。右侧从上
+ * 到下就是网关的执行顺序，因此序号必须显式标出。用原生 HTML5 Drag & Drop，
+ * 拖拽源（"来自左侧"还是"右侧第几项"）用一个 ``drag`` 状态在 start / drop 之间
+ * 传递；右侧的上下排序只需要 :func:`reorder` 这个"把 from 项放到 to 位"的小函数。
+ * 上移/下移按钮是键盘可达的等价操作，避免只能靠鼠标。
+ */
+function RouteOrderEditor({ title, pool, order, onChange }) {
+  const [drag, setDrag] = useState(null);
+  // 左侧只列出尚未加入顺序的模型，避免同一模型出现两次。
+  const available = pool.filter((label) => !order.includes(label));
+
+  const add = (label) => {
+    if (!label || order.includes(label)) return;
+    onChange([...order, label]);
+  };
+  const remove_at = (index) => onChange(order.filter((_, i) => i !== index));
+
+  const drop_on_item = (targetIndex, event) => {
+    event.preventDefault();
+    if (!drag) return;
+    if (drag.kind === "pool") add(drag.label);
+    else onChange(reorder(order, drag.index, targetIndex));
+    setDrag(null);
+  };
+
+  const drop_on_list = (event) => {
+    event.preventDefault();
+    if (!drag) return;
+    // 拖到列表空白处 = 追加到末尾（左侧拖入）/ 移到末尾（右侧内部）。
+    if (drag.kind === "pool") add(drag.label);
+    else onChange(reorder(order, drag.index, order.length - 1));
+    setDrag(null);
+  };
+
+  return (
+    <div className="mt-3">
+      <p className="mb-2 text-xs text-muted">
+        {title} · 从上到下依次尝试执行（第 1 项优先，失败则退到下一项）
+      </p>
+      <div className="flex flex-wrap gap-3">
+        <div className="min-w-[240px] flex-1 rounded-lg border border-border bg-raised p-3">
+          <div className="mb-2 text-xs text-muted">全部可选模型（拖到右侧）</div>
+          {pool.length === 0 ? (
+            <p className="text-sm text-faint">先在下方「包含的模型」里勾选模型。</p>
+          ) : available.length === 0 ? (
+            <p className="text-sm text-faint">已全部加入右侧顺序。</p>
+          ) : (
+            <ul className="flex flex-col gap-1.5">
+              {available.map((label) => (
+                <li
+                  key={label}
+                  draggable
+                  onDragStart={() => setDrag({ kind: "pool", label })}
+                  onDragEnd={() => setDrag(null)}
+                  className="cursor-grab rounded-md border border-border-soft bg-panel px-2.5 py-1.5 font-mono text-xs text-fg2"
+                >
+                  {label}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div
+          className="min-w-[240px] flex-1 rounded-lg border border-border bg-raised p-3"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={drop_on_list}
+        >
+          <div className="mb-2 text-xs text-muted">
+            路由顺序（自上而下执行{order.length ? `，共 ${order.length} 项` : ""}）
+          </div>
+          {order.length === 0 ? (
+            <p className="text-sm text-faint">把左侧模型拖到这里，或不去拖就保持空顺序。</p>
+          ) : (
+            <ol className="flex flex-col gap-1.5">
+              {order.map((label, index) => (
+                <li
+                  key={label}
+                  draggable
+                  onDragStart={() => setDrag({ kind: "order", index })}
+                  onDragEnd={() => setDrag(null)}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => drop_on_item(index, event)}
+                  className="flex cursor-grab items-center gap-2 rounded-md border border-border-soft bg-panel px-2.5 py-1.5"
+                >
+                  <span className="w-5 shrink-0 tabular text-xs text-faint">{index + 1}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg2">{label}</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="上移"
+                    disabled={index === 0}
+                    onClick={() => onChange(reorder(order, index, index - 1))}
+                  >
+                    <ChevronUp size={13} />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="下移"
+                    disabled={index === order.length - 1}
+                    onClick={() => onChange(reorder(order, index, index + 1))}
+                  >
+                    <ChevronDown size={13} />
+                  </Button>
+                  <Button variant="ghost" size="icon" aria-label="移除" onClick={() => remove_at(index)}>
+                    <X size={13} />
+                  </Button>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 把第 ``from`` 项移动到第 ``to`` 位；越界或同位原样返回。用于右侧列表内部排序。 */
+export function reorder(list, from, to) {
+  if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return list;
+  const next = [...list];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
 }

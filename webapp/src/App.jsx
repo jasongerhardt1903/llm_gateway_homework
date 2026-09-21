@@ -6,12 +6,14 @@ import {
   MessagesSquare,
   Route,
   ScrollText,
+  Settings,
 } from "lucide-react";
 import ModelsPage from "./pages/ModelsPage.jsx";
 import ProfilesPage from "./pages/ProfilesPage.jsx";
 import ChatPage from "./pages/ChatPage.jsx";
 import DashboardPage from "./pages/DashboardPage.jsx";
 import TracePage from "./pages/TracePage.jsx";
+import SettingsPage from "./pages/SettingsPage.jsx";
 import { getMeta } from "./api.js";
 import { cn } from "./lib/utils.js";
 
@@ -22,6 +24,7 @@ const TABS = [
   { key: "chat", label: "Chat", icon: MessagesSquare, component: ChatPage },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, component: DashboardPage },
   { key: "trace", label: "Trace", icon: ScrollText, component: TracePage },
+  { key: "settings", label: "设置", icon: Settings, component: SettingsPage },
 ];
 
 export default function App() {
@@ -74,7 +77,7 @@ export default function App() {
           })}
         </nav>
         <div className="mt-auto px-2 text-xs text-faint">
-          模型定义 · Profile · Chat · Dashboard · Trace
+          模型定义 · Profile · Chat · Dashboard · Trace · 设置
         </div>
 
         <div className="mt-3 border-t border-border px-2 pt-3 text-xs">

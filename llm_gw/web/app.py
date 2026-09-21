@@ -6,32 +6,40 @@
 
 模型清单与 gwprofile 通过 :class:`Storage` 的 config 表持久化，重启后不丢失。
 
-版本：0.8.3
+管理面还负责两件事：
+
+* **agent 接口口令的网页配置**（需求 Harness 层功能第 1 条）：控制台写入 config 表，
+  环境变量 ``LLM_GW_AGENT_PASSWORD`` 仍然优先。
+* **通讯原始日志的查询**（需求 Harness 层功能第 3 条）：``/api/exchanges*`` 直接以
+  ``raw data`` 返回与后端 agent 的往来报文，供日志页切换"原始 / 渲染"两种模式。
+  Chat 页也不再经由控制台转发——它直接按 agent 的 schema 调 ``/v1/tasks:stream``
+  （需求管理与交互层功能第 7 条）。
+
+版本：0.8.4
 """
 
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..adapter import discovery
 from ..adapter.presets.registry import get_preset, provider_choices
 from ..core.messages import Model
-from ..core.schema import SchemaViolation, SyntaxViolation, Task, validate_schema, validate_syntax
-from ..harness.service import GatewayService
+from ..core.schema import SchemaViolation, SyntaxViolation, validate_schema, validate_syntax
+from ..harness.service import AGENT_PASSWORD_ENV, GatewayService
 from ..harness.storage import Storage
 from ..router.registry import CapabilityRegistry
 from .api_models import (
-    ChatRequest,
+    AgentPasswordPayload,
     ModelPayload,
     ProfilePayload,
     model_from_payload,
@@ -244,28 +252,56 @@ def create_web_app(
             raise HTTPException(status_code=404, detail=f"trace {trace_id} 不存在")
         return {"trace_id": trace_id, "calls": calls}
 
-    # -- Chat SSE 代理 ----------------------------------------------------
+    # -- 网关设置：agent 接口口令（需求 Harness 层功能第 1 条） -------------
 
-    @app.post("/api/chat/stream")
-    async def chat_stream(payload: ChatRequest) -> StreamingResponse:
-        task = _task_from_chat(payload)
-        return StreamingResponse(
-            service.stream_sse(task, trace_id=f"chat-{task.task_id}"),
-            media_type="text/event-stream",
-            headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
-        )
+    @app.get("/api/settings")
+    async def get_settings() -> dict:
+        """只回"口令从哪来"，**不回口令本身**——回显等于把它写进浏览器缓存。
 
-    @app.post("/api/chat")
-    async def chat(payload: ChatRequest) -> dict:
-        task = _task_from_chat(payload)
-        message = await service.complete(task, trace_id=f"chat-{task.task_id}")
+        ``source`` 让页面能如实提示用户：改网页配置在 ``env`` 情况下不生效。
+        """
+        source = service.password_source()
         return {
-            "task_id": task.task_id,
-            "terminal": message.terminal_state(),
-            "text": message.text(),
-            "stop_reason": message.stop_reason,
-            "error_message": message.error_message,
+            "agent_password_set": source != "none",
+            "agent_password_source": source,
+            "env_key": AGENT_PASSWORD_ENV,
         }
+
+    @app.put("/api/settings/agent-password")
+    async def set_agent_password(payload: AgentPasswordPayload) -> dict:
+        await service.set_agent_password(payload.password)
+        source = service.password_source()
+        return {
+            "agent_password_set": source != "none",
+            "agent_password_source": source,
+            "env_key": AGENT_PASSWORD_ENV,
+        }
+
+    # -- 通讯原始往来数据（需求 Harness 层功能第 3 条） ---------------------
+
+    @app.get("/api/exchanges")
+    async def list_exchanges(q: str = "", task_id: str = "", limit: int = 100) -> list[dict]:
+        """按 task id 或关键字查通讯记录。
+
+        返回的就是库里的原文（``request_raw`` / ``response_raw``），控制台自己
+        不做渲染——"raw data 模式"要求前端拿到的是字节本来的样子。
+        """
+        if storage is None:
+            raise HTTPException(status_code=503, detail="未配置存储，通讯日志不可用")
+        if task_id:
+            return await storage.exchanges_for_task(task_id)
+        if q:
+            return await storage.search_exchanges(q, limit=limit)
+        return await storage.recent_exchanges(limit=limit)
+
+    @app.get("/api/exchanges/{exchange_id}")
+    async def get_exchange(exchange_id: str) -> dict:
+        if storage is None:
+            raise HTTPException(status_code=503, detail="未配置存储，通讯日志不可用")
+        found = await storage.exchange(exchange_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"通讯记录 {exchange_id} 不存在")
+        return found
 
     # -- 原始 task 调试接口（两层校验的错误码同样返回给控制台） -----------
 
@@ -408,32 +444,6 @@ def _model_usage(registry: CapabilityRegistry, health: list[dict]) -> list[dict]
             }
         )
     return rows
-
-
-def _task_from_chat(payload: ChatRequest) -> Task:
-    """ChatRequest → 统一 Task。task_id 由网关生成（Chat 页没有幂等需求）。"""
-    import uuid
-
-    body = {
-        "task_id": f"chat-{uuid.uuid4().hex[:12]}",
-        "input": {
-            "messages": [message.model_dump(exclude_none=True) for message in payload.messages],
-            "stream": payload.stream,
-        },
-    }
-    if payload.profile:
-        body["profile"] = payload.profile
-    if payload.system:
-        body["input"]["system"] = payload.system
-    if payload.tools:
-        body["input"]["tools"] = [tool.model_dump() for tool in payload.tools]
-    if payload.response_schema is not None:
-        body["input"]["response_schema"] = payload.response_schema
-    if payload.max_tokens is not None:
-        body["input"]["max_tokens"] = payload.max_tokens
-    if payload.temperature is not None:
-        body["input"]["temperature"] = payload.temperature
-    return validate_schema(json.loads(json.dumps(body)))
 
 
 def _mount_frontend(app: FastAPI) -> None:

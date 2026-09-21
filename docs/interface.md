@@ -77,11 +77,16 @@ agent API 受**简单口令**保护；控制台 `/api/*` 不在保护范围内�
 
 | 项 | 约定 |
 |---|---|
-| 口令来源 | 环境变量 `LLM_GW_AGENT_PASSWORD`（只读环境变量，不写库、不入代码库） |
+| 口令来源 | **网页配置**（控制台「设置」页，落 `config` 表的 `agent_password` 键）或环境变量 `LLM_GW_AGENT_PASSWORD`；**环境变量优先**（0.8.4 起支持网页配置） |
 | 携带方式 | `Authorization: Bearer <password>` |
 | 未配置口令 | **不强制**（便于本地开发；生产环境请务必配置） |
 | 豁免 | `GET /health`——探活程序通常不带凭证 |
 | 失败 | `401` + `AUTH_REQUIRED`，响应头带 `WWW-Authenticate: Bearer` |
+
+环境变量优先是刻意的：口令是部署期凭据，容器化部署不必把它写进 `llm_gw.sqlite3`
+（"把库拷走"就等于"拿到口令"）。网页配置服务的是本地/单机场景——不必改名环境变量重启
+进程。`GET /api/settings` 会如实回报口令当前来源（`env` / `console` / `none`）与
+`env_key`，供页面提示用户"改网页配置在 `env` 情况下不生效"；**它不回显口令本身**。
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/tasks \
@@ -216,11 +221,70 @@ data: [DONE]
 | GET | `/api/dashboard` | 聚合指标 + 各模型状态表 |
 | GET | `/api/traces?q=&limit=` | 关键字搜索调用记录（空 `q` 返回最近记录） |
 | GET | `/api/traces/{trace_id}` | 按 `trace_id` 取整条链路 |
-| POST | `/api/chat/stream` | Chat 页的 SSE 代理 |
-| POST | `/api/chat` | Chat 页的非流式版本 |
+| GET | `/api/settings` | 网关设置：口令是否已配、来源（`env`/`console`/`none`）、`env_key`（0.8.4 新增，不回显口令） |
+| PUT | `/api/settings/agent-password` | 配置 agent 口令；空串/`null` 表示清除（0.8.4 新增） |
+| GET | `/api/exchanges?q=&task_id=&limit=` | 与后端 agent 的通讯原始日志；`task_id` 优先于 `q`（0.8.4 新增） |
+| GET | `/api/exchanges/{exchange_id}` | 单条通讯的原始往来报文（0.8.4 新增） |
 | POST | `/api/tasks:validate` | 用两层校验试跑一个原始 task（调试用） |
 
 模型清单与 gwprofile 通过 `Storage` 的 `config` 表持久化，进程重启后由 `restore_config()` 恢复。
+
+> **0.8.4 起控制台不再有 Chat 专属契约。** 原先的 `POST /api/chat` 与
+> `POST /api/chat/stream` 已删除：Chat 页作为"一个简单的后端 agent Loop"，
+> 直接按 agent 的 `Task` schema 调 `/v1/tasks:stream`（需求管理与交互层功能第 7 条）。
+> 这样控制台用的是与真实 agent **同一份**契约，代理层带来的口径漂移随之消失。
+
+### `GET /api/exchanges` — 通讯原始日志（0.8.4 新增）
+
+与 `/api/traces` 是**两层不同的切法**，刻意不合并：
+
+| | 记录什么 | 粒度 |
+|---|---|---|
+| `requests`（`/api/traces`） | 翻译后的调用：落到哪个模型、花了多少钱 | 一次**模型调用** |
+| `exchanges`（`/api/exchanges`） | agent 发来什么字节、网关回什么字节 | 一次**通讯** |
+
+一次通讯可能对应 0 次模型调用（两层校验失败时一次都没有），因此不能合成一张表。
+**被两层校验挡下的通讯同样有记录**（400 / 422），这类记录连 `task_id` 都只能从原文里
+尽力抠：语法合法就取报文里的 `task_id`，连 JSON 都不合法则归为空串一组——否则 agent
+最常踩的 schema 错误反而查不到。按 `(task_id, flow_index)` 两级组织——同一个 task 可能
+来回多次（校验失败重发、流式重连、多轮补充），`flow_index` 是那个"第二级"，从 1 起递增。
+
+```jsonc
+{
+  "exchange_id": "ex-3f9a1c2b7d40",
+  "task_id": "req-1",
+  "trace_id": "tr-1",              // 取自请求头 x-trace-id，可为空
+  "ts": 1789976473.12,             // epoch 秒
+  "flow_index": 1,                 // 同一 task 内的第几次通讯
+  "endpoint": "/v1/tasks:stream",  // 或 "/v1/tasks"
+  "stream": true,
+  "request_raw": "{\"task_id\":\"req-1\", ...}",   // agent 发来的原文
+  "response_raw": "event: text_delta\ndata: {...}\n\n ... event: done\n",  // 实际发出的原文
+  "status": "done",                // done | error | cancelled（通讯的真实结局，不是 HTTP 码）
+  "error_code": null,
+  "error_message": null,
+  "duration_ms": 812.4,
+  "meta": { "model": "openai/gpt-4o-mini", "profile": "prod",
+            "degraded_from": "", "degraded_to": "" }
+}
+```
+
+两侧报文都**先脱敏再落盘**：agent 可能在 metadata 里夹带自己的凭据，原样入库就等于把
+凭据写到了磁盘上。`response_raw` 是实际发给客户端的 SSE 帧原文（含 `event:` / `data:`
+行与 `[DONE]`），不是渲染后的结果——日志页据此提供"raw data 模式"与"渲染后易读模式"
+两种查看方式（需求 Harness 层功能第 3 条）。被放弃的那条流（首 delta 前降级）的帧
+**不进记录**——客户端从没收到过它们。
+
+### 流式降级（0.8.4 新增）
+
+`/v1/tasks:stream` 现在也支持降级（需求 adapter 层功能第 8 条"降级时按路由中可用模型
+执行"）。**换模型只发生在首个业务 delta 之前**：那时客户端一个业务字节都没收到，重开
+一条流不会造成重复内容。一旦吐过业务 delta 就不再换模型——需求明令"已流式输出 →
+不盲目重新生成"。
+
+对外仍然只有一个终态：被放弃的那条流的 `error` 事件**不会**转发给客户端，只有最后
+落地的那条流才产出终态事件与可选的 `[DONE]`。落库时 `resilience.attempt` 记实际开过的
+流数、`fallback` 记是否降级、`resilience.disposition` 记触发降级的那个处置。
 
 ### `GET /api/profiles` / `POST /api/profiles`
 
@@ -237,7 +301,7 @@ data: [DONE]
     "thinking_mode": "default", "max_tool_rounds": null, "max_tokens": null
   },
   "route_mode": "dynamic",         // dynamic | static，默认 dynamic
-  "static_order": "",              // static 时用逗号分隔写死优先顺序（支持全角/顿号）
+  "static_order": ["a/gpt-4o-mini", "b/deepseek-flash"],  // static 时的执行顺序（自上而下）
   "retry_enabled": true,
   "max_retries": 3                 // 0–10，per-profile 重试上限
 }
@@ -246,6 +310,7 @@ data: [DONE]
 - `models[].label` 引用模型（`provider/id` 或别名）；勾选 `prefer_own_config` 表示该模型在本 profile 内忽略模版、用自己的高级配置。
 - 模版判定矩阵：启用 + 未勾选 `prefer_own_config` → 用模版；启用 + 勾选 → 用模型自身配置；未启用 → 用模型自身配置。
 - `route_mode == "static"` 且 `static_order` 非空时 `is_pinned()` 为真，动态打分不得改写顺序；顺序中标签全部无效则退化为动态选择。
+- `static_order` 是 `models[].label` 的**有序数组**。控制台的「路由表」编辑器用拖拉拽维护它：左侧是 profile 已选的模型，拖到右侧成为路由链，右侧内部可上下拖拽排序，**执行自上而下**（需求路由模块功能第 6 条）。profile 的 `name` 就是这张路由表的名称。
 - 删除 profile 时，引用它的旧调用记录里仍保留当时生效的 `profile` 名（作废的引用会自动跳过被删模型）。
 
 ### 模型 payload 与高级配置、密钥
