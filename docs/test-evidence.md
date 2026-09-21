@@ -438,6 +438,27 @@ deepseek   deepseek-flash               ctx=        0 max=  202512   ← 用户�
 `config` 表里的 `models` 行（或删库重来）才会看到新清单**。注意 profile 里若引用了
 被清掉的标签，需要一并调整。
 
+清掉该行后重启（数据库先备份为 `llm_gw.sqlite3.bak-<时间戳>`），真实进程回到 preset 清单，
+说明 preset 内容与"清库即生效"这条路径都是通的：
+
+```bash
+$ curl -s localhost:8000/api/models          # 6 个模型，deepseek 为新型号
+  openai     gpt-4o-mini                  ctx=   128000 max=   16384
+  openai     gpt-4o                       ctx=   128000 max=   16384
+  deepseek   deepseek-flash               ctx=  1000000 max=  384000
+  deepseek   deepseek-v4-pro              ctx=  1000000 max=  384000
+  anthropic  claude-3-5-haiku-20241022    ctx=   200000 max=    8192
+  anthropic  claude-3-5-sonnet-20241022   ctx=   200000 max=    8192
+
+$ curl -s localhost:8000/api/profiles        # profile 配置未被牵连
+  t1  → ['deepseek/Deepseek-flash-real', 'deepseek/Deepseek-flash', 'deepseek/deepseek-flash']
+  poc → ['openai/gpt-4o-mini', 'openai/gpt-4o', 'deepseek/deepseek-flash']
+```
+
+两个 profile 里只有 `deepseek/deepseek-flash` 是被真正引用的标签，它在 preset 里继续存在
+（值已更新为新型号参数）；`t1` 里的 `deepseek/Deepseek-flash-real` 与 `deepseek/Deepseek-flash`
+在清库前后都是悬空标签（库里从未有过这两个 id），属于历史遗留，与本次变更无关。
+
 **清单缓存（v0.8.1）同样用真实进程验证**——缓存是"进程内状态"，单元测试证明不了
 它在真实服务里真的生效。重启服务后连续请求，看耗时落差：
 
