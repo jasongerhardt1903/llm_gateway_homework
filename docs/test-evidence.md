@@ -1,6 +1,11 @@
 # 测试证据
 
-> 本文件是 **v0.8.4** 的存档。v0.8.4 按更新后的 `需求文档.md` 落五条新需求：
+> 本文件是 **v0.8.5** 的存档。v0.8.5 修一个缺陷：`_persist_models` 落库时复用了**对外**
+> payload（`api_key` 恒为 `None`），每次保存模型都会把密钥抹掉，重启后模型全部变"未配置"。
+> 落库改走 `model_to_stored_payload()`，后端用例由 389 增至 **390**
+> （`test_web_api.py` +1），覆盖率 93%；前端 30 例不变，接口契约无变化。
+>
+> 下面是 v0.8.4 的内容存档。v0.8.4 按更新后的 `需求文档.md` 落五条新需求：
 > **流式路径也降级**（首 delta 前换模型）、**agent 口令网页可配**（env 优先）、
 > **通讯原始日志**（`exchanges` 表 + `/api/exchanges`）、**控制台不再有 Chat 专属契约**
 > （删 `/api/chat*`，Chat 页直连 `/v1/tasks:stream`）、**路由表拖拉拽**。
@@ -97,19 +102,19 @@ llm_gw/runtime.py                                   50      1    98%   119
 llm_gw/util/__init__.py                              0      0   100%
 llm_gw/util/clock.py                                22      2    91%   34-35
 llm_gw/web/__init__.py                               0      0   100%
-llm_gw/web/api_models.py                            84      1    99%   142
+llm_gw/web/api_models.py                            88      1    99%   219
 llm_gw/web/app.py                                  237     22    91%   139, 175, 206, 209-210, 230, 241, 249, 290, 300, 317-318, 363-364, 378, 387, 399-400, 405, 413, 456, 463
 ------------------------------------------------------------------------------
-TOTAL                                             3340    246    93%
-389 passed in 2.49s
+TOTAL                                             3344    246    93%
+390 passed in 2.61s
 ```
 
-**389 passed，0 failed，93% 覆盖率。**
+**390 passed，0 failed，93% 覆盖率。**
 
 本轮改动的模块覆盖率：`harness/service.py` 97%（流式降级 + 口令网页配置 +
 被校验挡下的通讯也落 exchanges）、`harness/storage.py` 95%（`exchanges` 表与四个查询方法）、
 `web/app.py` 91%（`/api/settings*` 与 `/api/exchanges*`，并删除了 `/api/chat*`）、
-`web/api_models.py` 99%、`runtime.py` 98%、`router/router.py` 89%。
+`web/api_models.py` 99%、`runtime.py` 98%、`router/router.py` 90%。
 
 `harness/service.py` 未覆盖的 6 行都是防御性分支：113（未注入存储时的
 `load_agent_password` 提前返回）、268（候选链至少含一项时的兜底）、
@@ -141,10 +146,10 @@ TOTAL                                             3340    246    93%
 | `tests/router/test_retry.py` | 21 | |
 | `tests/router/test_router.py` | 20 | |
 | `tests/web/test_model_discovery.py` | 21 | **+5（v0.8.1：清单缓存）**；v0.8.0 建此文件（16 例） |
-| `tests/web/test_web_api.py` | 40 | **+12（v0.8.4：口令网页配置、通讯日志、Chat 直连）** |
+| `tests/web/test_web_api.py` | 41 | **+12（v0.8.4：口令网页配置、通讯日志、Chat 直连）**、**+1（v0.8.5：密钥持久化）** |
 | `tests/test_phase0_infra.py` | 4 | |
 | `tests/test_runtime.py` | 11 | v0.7.0：agent API 与控制台同进程共存 |
-| **合计** | **389** | **+17（v0.8.4）** |
+| **合计** | **390** | **+17（v0.8.4）、+1（v0.8.5）** |
 
 ## 3. 需求要求的六类测试
 
@@ -672,6 +677,40 @@ Profile 选「全局模型池」、输入"现在几点？"发送）：
 循环在第一轮就静默结束（表现是"模型说要调工具，页面却没动作"）。现在这段形状写进了
 `docs/interface.md` 的「`done` / `cancelled` 里的 `message` 形状」，并有用例按实测原文固化。
 
+### 6.9 模型密钥跨重启持久化（v0.8.5）
+
+0.8.4 及之前，`_persist_models` 落库时复用了**对外** payload（`api_key` 恒为 `None`），于是
+**每次保存模型都会把密钥抹掉**，重启后 `/api/models` 六个模型全变"未配置"、调用回落到可能
+已失效的环境变量密钥并 401。0.8.5 把落库改走 `model_to_stored_payload()`。
+
+用干净库（`/tmp/v085.sqlite3`、端口 8052）验证，顺序是"建 → 杀进程 → 重启 → 读"：
+
+```bash
+# 1) 建一个带密钥的模型
+$ curl -s -X POST localhost:8052/api/models -d '{..., "id":"key-probe", "api_key":"sk-persist-probe"}'
+{"id":"key-probe", ..., "api_key":null, "api_key_set":true}      # 响应仍不回显密钥
+
+# 2) 直接看落库的 config 表
+$ sqlite3 /tmp/v085.sqlite3 "select value from config where key='models'"
+[{"id": "key-probe", "api_key": "sk-persist-probe", "api_key_set": true}]   # 密钥确实进库了
+
+# 3) 杀掉进程，用同一个库重启
+$ LLM_GW_DB=/tmp/v085.sqlite3 uvicorn llm_gw.runtime:create_runtime_app --factory --port 8052
+$ curl -s localhost:8052/api/models | ...                        # key-probe 那一条
+{"id": "key-probe", "api_key": null, "api_key_set": true}        # 重启后仍是"已配置"
+$ curl -s localhost:8052/api/models | grep -c 'sk-persist-probe'
+0                                                                # 任何响应都不带明文密钥
+```
+
+三个点值得记下：
+
+- **「只写不回显」管的是响应，不是持久化**：响应里 `api_key` 恒为 `null`（第 1、3 步），
+  库里必须是明文（第 2 步）——两件事分开走，契约与落库各用一份 payload 工厂。
+- **`api_key_set` 跨重启为 `true` 才是真的修好了**：只断言"POST 能存进去"是查不出这个缺陷的，
+  因为内存注册表当时是对的，坏只坏在落库那一步、下一次启动才显形。
+- 升级后**旧库里那份"无密钥"清单仍在**，需要在控制台重新填一次密钥；此后不会再被
+  保存动作抹掉。
+
 ## 7. 复现方式
 
 ```bash
@@ -686,7 +725,7 @@ cd webapp && npm install && npm test
 .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
 ```
 
-所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试与缓存过期测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 389 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级；6.7 同理会真的打一次上游并收到 401，因此**也不需要有效密钥**；6.8 用本地假上游，同样不需要真实密钥）。
+所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试与缓存过期测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 390 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级；6.7 同理会真的打一次上游并收到 401，因此**也不需要有效密钥**；6.8 用本地假上游，同样不需要真实密钥；6.9 用干净库起停两次，全程不访问任何上游）。
 
 > 复现 v0.8.2 的 preset 验证时，记得用干净库（`LLM_GW_DB=/tmp/fresh.sqlite3`）：用默认的
 > `llm_gw.sqlite3` 会被里面已保存的模型清单覆盖，看到的仍是旧型号，详见第 6.6 节。

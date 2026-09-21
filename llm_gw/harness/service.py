@@ -30,7 +30,7 @@
 查不到，而 agent 最常踩的恰恰是 schema 错误。落库的状态是通讯的真实结局，不是 HTTP 码：
 非流式调用模型失败时 HTTP 仍是 200（状态码只表达"请求本身合法"）。
 
-版本：0.8.4
+版本：0.8.5
 """
 
 from __future__ import annotations

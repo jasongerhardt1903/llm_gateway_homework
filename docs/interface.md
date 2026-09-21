@@ -362,6 +362,9 @@ data: [DONE]
 
 - `POST/PUT /api/models` 里 `api_key` 缺省表示**不修改**已有密钥，传空串表示**清除**。
 - 响应里的 `api_key` 恒为 `null`，只回显 `api_key_set` 布尔量——密钥绝不回显给控制台。
+- 「只写不回显」约束的是 **HTTP 响应**，不是持久化：密钥会如实写进 SQLite 的 `config`
+  表（`restore_config` 在启动时读回），否则重启后模型全部丢掉密钥、回落到环境变量。
+  落库因此走内部 payload（`model_to_stored_payload`），与对外那份分开。
 - 实际调用时的取值优先级：模型密钥 > 供应商 preset 约定的环境变量，见 README。
 - `advanced.max_tool_rounds` 是工具调用轮数护栏，超限即返回 `TOOL_ROUNDS_EXCEEDED`（处置为 `fail`）。
 

@@ -6,7 +6,8 @@
 两条安全约定：
 
 * ``ModelPayload.api_key`` **只写不回显**——``model_to_payload`` 一律把它置为
-  ``None``，只回显 ``api_key_set`` 这个布尔量。
+  ``None``，只回显 ``api_key_set`` 这个布尔量。该约定管的是 **HTTP 响应**；持久化是
+  另一条路，走 :func:`model_to_stored_payload`（带上密钥），否则重启即丢密钥。
 * ``api_key`` 为 ``None`` 表示"不修改已有密钥"；显式传空串才表示清除。
 
 Chat 页不再走控制台自己的请求契约（需求：管理与交互层功能第 7 条"Chat 模仿一个简单的
@@ -33,6 +34,7 @@ __all__ = [
     "ProfilePayload",
     "AgentPasswordPayload",
     "model_to_payload",
+    "model_to_stored_payload",
     "model_from_payload",
     "profile_to_payload",
     "profile_from_payload",
@@ -187,11 +189,28 @@ class AgentPasswordPayload(BaseModel):
 
 
 def model_to_payload(model: Model) -> ModelPayload:
-    """模型 → 对外 payload。
+    """模型 → **对外** payload。
 
     ``api_key`` 强制为 ``None``：密钥只写不回显，避免它随一次 GET 泄漏到浏览器
     历史、代理日志或前端状态里。前端只需知道"有没有配"。
+
+    **不要拿它写库**——写库要用 :func:`model_to_stored_payload`。
     """
+    return _model_payload(model, api_key=None)
+
+
+def model_to_stored_payload(model: Model) -> ModelPayload:
+    """模型 → **落库** payload：带上 ``api_key``。
+
+    "只写不回显"约束的是 **HTTP 响应**，不是持久化。拿 ``model_to_payload``（其
+    ``api_key`` 恒为 ``None``）去写 config 表，重启后密钥就集体归零：``/api/models``
+    六个模型全显示"未配置"，调用回落到可能已失效的环境变量密钥并 401。因此落库这一路
+    单独走这里，把密钥如实写进 SQLite。
+    """
+    return _model_payload(model, api_key=model.api_key or "")
+
+
+def _model_payload(model: Model, *, api_key: str | None) -> ModelPayload:
     return ModelPayload(
         id=model.id,
         name=model.name,
@@ -210,7 +229,7 @@ def model_to_payload(model: Model) -> ModelPayload:
         display_provider=model.display_provider,
         tag=model.tag,
         advanced=AdvancedPayload.from_config(model.advanced),
-        api_key=None,
+        api_key=api_key,
         api_key_set=bool(model.api_key),
     )
 

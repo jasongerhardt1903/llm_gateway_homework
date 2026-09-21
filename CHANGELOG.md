@@ -2,6 +2,43 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.8.5
+
+修一个把"密钥只写不回显"错误地延伸到持久化上的缺陷。
+
+### 缺陷
+
+`_persist_models` 落库时复用了**对外** payload（`model_to_payload`，其 `api_key` 恒为
+`None`）。于是每次保存模型（新增/修改/删除任一动作）都会把已配置的密钥抹成空串，
+`restore_config` 在下次启动时读回的自然是"没有密钥"的清单：
+
+- `/api/models` 六个模型全部显示"未配置"；
+- 实际调用回落到供应商 preset 约定的环境变量密钥，一旦该密钥失效就 401
+  （表现为"模型明明是好的，Chat 里却测不通"）。
+
+"只写不回显"约束的是 **HTTP 响应**，不该管到数据库。
+
+### 变更
+
+- 新增 `model_to_stored_payload()`（`llm_gw/web/api_models.py`）：落库专用的 payload
+  工厂，如实带上 `api_key`；两个工厂共用 `_model_payload()`，**对外的那份仍然恒为
+  `None`**，因此接口契约与响应体形状毫无变化。
+- `_persist_models()`（`llm_gw/web/app.py`）改用它。
+- 版本号 `0.8.4` → `0.8.5`（`llm_gw/__init__.py`、`pyproject.toml`、
+  `webapp/package.json`、`webapp/src/styles.css`、`README.md`、
+  `llm_gw/web/app.py`、`llm_gw/harness/service.py`、`llm_gw/harness/storage.py`）。
+- 文档同步：`docs/interface.md` 的密钥约定里写明"只写不回显管的是响应、不是持久化"。
+
+### 测试
+
+- 后端 **390 passed**（`test_web_api.py` +1：`test_api_key_persists_and_survives_restart`
+  断言密钥真的进了 `config` 表，并在"模拟重启"（新注册表 + `restore_config`）后仍在），
+  覆盖率 **93%**。
+- 前端 **30 passed**，无改动。接口契约不变。
+
+> 已在库里存着"无密钥"清单的部署：升级后**重新在控制台填一次密钥**即可——
+> 此后不会再被保存动作抹掉。
+
 ## 0.8.4
 
 按更新后的 `需求文档.md` 落五条新需求：流式降级、口令网页可配、通讯原始日志、

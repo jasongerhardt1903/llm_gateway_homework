@@ -18,7 +18,7 @@ from llm_gw.router.registry import CapabilityRegistry
 from llm_gw.router.router import Router
 from llm_gw.util.clock import FakeClock
 from llm_gw.web.api_models import ProfilePayload, profile_from_payload
-from llm_gw.web.app import create_web_app, restore_config
+from llm_gw.web.app import CONFIG_MODELS, create_web_app, restore_config
 
 from tests.support.mock_transport import client_for, openai_sse, scripted_transport, sse_transport
 
@@ -246,6 +246,29 @@ async def test_update_model_with_empty_api_key_clears_it(model, storage):
         await client.put("/api/models/openai/custom-1", json=_model_payload(api_key=""))
 
     assert registry.get("openai/custom-1").api_key == ""
+
+
+async def test_api_key_persists_and_survives_restart(model, storage):
+    """密钥必须真落进 config 表。
+
+    "只写不回显"约束的是 HTTP 响应，不是持久化：早先落库复用了对外 payload（其
+    ``api_key`` 恒为 ``None``），于是每次保存都把密钥抹掉，重启后六个模型全变
+    "未配置"、调用回落到环境变量里的旧密钥并 401。
+    """
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+    async with await _client(app) as client:
+        await client.post("/api/models", json=_model_payload(api_key="sk-secret"))
+        # 界面不回显密钥，因此后续每次保存都只提交不带 api_key 的 payload——
+        # 这些保存同样不能把已落库的密钥抹掉。
+        await client.put("/api/models/openai/custom-1", json=_model_payload(name="Renamed"))
+
+    saved = next(item for item in await storage.load_config(CONFIG_MODELS) if item["id"] == "custom-1")
+    assert saved["api_key"] == "sk-secret"
+
+    # 模拟重启：新注册表 + restore_config 从库里恢复。
+    fresh = CapabilityRegistry()
+    await restore_config(fresh, storage)
+    assert fresh.get("openai/custom-1").api_key == "sk-secret"
 
 
 # --------------------------------------------------------------------------

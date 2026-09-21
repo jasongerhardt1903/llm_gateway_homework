@@ -15,7 +15,7 @@
   Chat 页也不再经由控制台转发——它直接按 agent 的 schema 调 ``/v1/tasks:stream``
   （需求管理与交互层功能第 7 条）。
 
-版本：0.8.4
+版本：0.8.5
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ from .api_models import (
     ProfilePayload,
     model_from_payload,
     model_to_payload,
+    model_to_stored_payload,
     profile_from_payload,
     profile_to_payload,
 )
@@ -401,10 +402,17 @@ def _changelog_text() -> str:
 
 
 async def _persist_models(registry: CapabilityRegistry, storage: Storage | None) -> None:
+    """把模型清单落 config 表。
+
+    走 ``model_to_stored_payload``（带密钥）而不是对外的 ``model_to_payload``：后者
+    的 ``api_key`` 恒为 ``None``，拿它写库等于每次保存都把密钥抹掉，重启后
+    ``/api/models`` 全变"未配置"、调用回落到环境变量里的旧密钥。
+    """
     if storage is None:
         return
     await storage.save_config(
-        CONFIG_MODELS, [model_to_payload(model).model_dump() for model in registry.all_models()]
+        CONFIG_MODELS,
+        [model_to_stored_payload(model).model_dump() for model in registry.all_models()],
     )
 
 
