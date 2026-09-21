@@ -12,6 +12,9 @@ llm_gw.sqlite3
 llm_gw.sqlite3-*
 *.sqlite3
 *.sqlite3-*
+# 手工备份（如清 config 表前留的那份）同样含密钥
+*.sqlite3.bak*
+*.sqlite3.bak-*
 
 # 密钥：.env 保存 OPENAI_API_KEY / DEEPSEEK_API_KEY / ANTHROPIC_API_KEY 等
 .env
