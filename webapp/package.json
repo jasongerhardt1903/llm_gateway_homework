@@ -1,7 +1,7 @@
 {
   "name": "llm-gw-console",
   "private": true,
-  "version": "0.8.2",
+  "version": "0.8.3",
   "type": "module",
   "description": "LLM Gateway 可视化控制台：模型定义 / Profile / Chat / Dashboard / Trace",
   "scripts": {

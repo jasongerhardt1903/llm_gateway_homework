@@ -6,7 +6,7 @@
 
 模型清单与 gwprofile 通过 :class:`Storage` 的 config 表持久化，重启后不丢失。
 
-版本：0.8.2
+版本：0.8.3
 """
 
 from __future__ import annotations

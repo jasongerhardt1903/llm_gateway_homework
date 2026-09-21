@@ -2,6 +2,27 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.8.3
+
+**本次没有代码改动**，是一次版本标记：0.8.2 的 preset 换型号之后，用户库里遗留的
+`config` 表 `models` 行会整体覆盖 preset（见 `docs/test-evidence.md` 第 6.6 节），
+清掉该行并重启后 preset 才真正生效。因此升一个补丁号，让"跑着的这个进程是否已加载
+新清单"能直接从 `/api/meta` 的版本号上看出来——否则 0.8.2 的进程与清库前的 0.8.2
+进程在界面上无法区分。
+
+### 变更
+
+- 版本号 `0.8.2` → `0.8.3`（`llm_gw/__init__.py`、`pyproject.toml`、
+  `webapp/package.json`、`webapp/src/styles.css`、`README.md`、
+  `llm_gw/web/app.py`、`llm_gw/harness/service.py`）。
+- 测试用例、覆盖率、接口契约均无变化（后端 372 passed / 92%，前端 15 passed）。
+
+### 说明
+
+运行期配置（`llm_gw.sqlite3`）不属于交付物：`t1` profile 里两条悬空的模型引用
+（`deepseek/Deepseek-flash-real`、`deepseek/Deepseek-flash`）已通过
+`PUT /api/profiles/t1` 清理，只保留可解析的 `deepseek/deepseek-flash`。
+
 ## 0.8.2
 
 把 DeepSeek preset 的型号清单换成官方文档当前的型号。0.8.0 起的清单里写的
