@@ -96,6 +96,10 @@ LLM_GW_HOST=0.0.0.0 ./run.sh  # 局域网可访问
    agent Loop"，因此**直接按 agent 的 `Task` schema 调 `/v1/tasks:stream`**，不再经过控制台
    转发；页面上填 agent 口令（`Authorization: Bearer`），实时消费 SSE 流；
    `thinking_delta` 折叠展示，`error` / `cancelled` 终态标红且**不会**收到 `[DONE]`。
+   勾选**「带上 tools」**即可看到**多轮工具调用循环**：网关不跑这个循环，页面收到
+   `tool_call` 后本地执行内置假工具（`get_time` / `echo`）、把 `tool_result` 塞回
+   `messages` 再调一次，直到模型不再要工具（最多 4 轮）；循环里的几次通讯共用同一个
+   `task_id`，可在 Trace 的通讯日志里按 `flow_index` 看到完整序列。
 4. **Dashboard** —— 聚合指标：QPS、p50/p99 延迟、错误率、成本、模型健康。
 5. **Trace** —— 三种切法：按关键字（trace_id / call_id / 模型 / prompt 名 / 错误信息）搜索
    调用记录，点开某条按 8 个维度查看整条链路；任务瀑布；以及**通讯原始日志**——按

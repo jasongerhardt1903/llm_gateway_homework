@@ -5,7 +5,7 @@
 > **通讯原始日志**（`exchanges` 表 + `/api/exchanges`）、**控制台不再有 Chat 专属契约**
 > （删 `/api/chat*`，Chat 页直连 `/v1/tasks:stream`）、**路由表拖拉拽**。
 > 后端用例由 372 增至 **389**（`test_service.py` +5、`test_web_api.py` +12），
-> 覆盖率 **93%**；前端用例由 15 增至 **24**。
+> 覆盖率 **93%**；前端用例由 15 增至 **30**（其中工具循环 6 例）。
 > v0.8.3 是一次版本标记（无代码改动）：0.8.2 的 preset
 > 换型号被库里遗留的 `config` 表 `models` 行整体覆盖，清掉该行并重启后才真正生效，
 > 因此升补丁号以便从 `/api/meta` 直接分辨进程是否加载了新清单。用例数、覆盖率与
@@ -208,10 +208,10 @@ $ cd webapp && npm test
  RUN  v2.1.9 webapp
 
  ✓ src/__tests__/model-catalog.test.js (5 tests) 2ms
- ✓ src/__tests__/smoke.test.jsx (19 tests) 22ms
+ ✓ src/__tests__/smoke.test.jsx (25 tests) 25ms
 
  Test Files  2 passed (2)
-      Tests  24 passed (24)
+      Tests  30 passed (30)
 ```
 
 覆盖：五个页签渲染（含 Profile 页）、默认页、SSE 事件解析（含**事件被拆到两个网络分片**的场景）、`[DONE]` 不作为业务事件透出、`error` 终态仍交付、HTTP 错误抛出后端 `detail`；以及 v0.4.0 新增的任务瀑布图三例——按 `run_id` 分组（空值归入「未标记任务」、组内时间正序且不改动入参）、条宽相对全局最长调用与 TTFT 占比（含 `total_ms=0` 的最小宽度与除零保护）、分组渲染的汇总文案与终态配色。
@@ -242,9 +242,9 @@ v0.8.0 新增 7 例（前 8 例**断言未做任何修改**，继续通过）：
 ```bash
 $ cd webapp && npm run build
 dist/index.html                   0.40 kB │ gzip:   0.29 kB
-dist/assets/index-B7UFdmio.css   21.37 kB │ gzip:   5.26 kB
-dist/assets/index-B-hfpgvn.js   676.14 kB │ gzip: 201.58 kB
-✓ built in 1.99s
+dist/assets/index-TeWsNTx2.css   21.40 kB │ gzip:   5.27 kB
+dist/assets/index-CqsliWXv.js   679.71 kB │ gzip: 203.08 kB
+✓ built in 2.04s
 ```
 
 v0.8.4 新增 9 例（`smoke.test.jsx` 10 → 19；既有 10 例断言未做修改）：
@@ -260,6 +260,17 @@ v0.8.4 新增 9 例（`smoke.test.jsx` 10 → 19；既有 10 例断言未做修�
 | 「`reorder` 把第 from 项移动到第 to 位，同位原样返回」 | 列表内部拖拽排序的纯函数：前移 / 后移 / 原地不动 / 越界不动 |
 | 「按 task_id 两级分组，组内按 flow_index 升序并记录最后一次时间」 | 通讯日志的第一级是 task、第二级是每次通讯流程 |
 | 「`classify_payload` 区分 JSON / SSE / 纯文本」 | raw 模式与渲染模式的切换依据：JSON 美化、SSE 逐帧、其余回退原文 |
+
+v0.8.4 的工具循环部分再增 6 例（`smoke.test.jsx` 19 → 25，前端合计 24 → 30）：
+
+| 用例 | 断言要点 |
+|---|---|
+| 「页面提供工具开关、轮数上限说明与同一会话复用的 task_id」 | 静态渲染即出现工具开关、`最多 N 轮` 的上限文案、`task_id` 与「新会话」——循环的三要素在页面上可见 |
+| 「`parse_tools` 只做结构校验：合法 / 空 / 非 JSON / 非数组 / 缺 name」 | 五种输入各自的判定：空串是"不用工具"而非错误，其余给可读的中文错误（真正的 schema 校验留给网关 422，前端不重复实现） |
+| 「`run_local_tool` 执行本地假工具，未知工具给出可读说明」 | `get_time` 返回 ISO 8601、`echo` 回显且缺参不炸、未知工具返回提示而不是抛错 |
+| 「`assistant_content` 拼出文本 + tool_call 块，空文本时不带空 text 块」 | 回灌历史的 assistant 轮：空文本不产生空 `text` 块，缺 `id` 补空串（`tool_result` 要靠它配对） |
+| 「`tool_message` 的 tool_call_id 与发起调用一致」 | `tool_call_id` 必须与发起调用相同，否则会被适配层的成对性归一化当孤儿结果丢掉 |
+| 「done 帧里的工具调用能被识读（真实形状：`message.content[]` 的 `toolCall` 块）」 | **按实测原文固化**：`done.message` 是 `asdict` 展开的原始 `AssistantMessage`，工具调用在 `content[]` 里、块类型是驼峰 `toolCall`，顶层没有 `tool_calls`；纯文本回复与缺 `message` 两种情况都返回空数组（前者若误判会空转一轮） |
 
 > 体积增长来自 Recharts / TanStack Table / lucide-react；后端仍以同源方式托管
 > `webapp/dist`，未新增任何运行时服务。
@@ -617,6 +628,50 @@ response_raw: {"task_id": "flow-demo", "stop_reason": "error", "terminal": "erro
 > 接口形状提醒：`GET /api/exchanges` 返回的是**裸数组**（`/api/traces` 亦然），不是
 > `{"items": [...]}` 信封；`task_id` 与 `q` 同时给出时以 `task_id` 为准。
 
+### 6.8 Chat 页编排多轮 agent 工具循环（v0.8.4）
+
+「网关不跑工具循环」是刻意的设计（`Task.tool_rounds()` 的 docstring：上限只能以"拒绝超限请求"
+的方式表达），所以"收到 `tool_call` → 执行工具 → 把 `tool_result` 塞回 `messages` → 再调一次"
+必须由调用方实现。Chat 页演示的正是这一步，用本地假上游（`127.0.0.1:9099`：收到 `role: tool`
+的消息就回文本，否则回一个 `get_time` 调用）跑通两轮，两轮**共用同一个 `task_id`**：
+
+```bash
+$ .venv/bin/python /tmp/verify_tool_loop.py        # 临时脚本，指向 8050 的副本进程
+注册假模型：HTTP 200
+--- 第 1 轮：HTTP 200
+  toolcall_start: {"index": 0, "id": "call_abc", "name": "get_time"}
+  toolcall_end:   {"index": 0, "id": "call_abc", "name": "get_time", "arguments": {}}
+  done:           {"reason": "tool_use", "message": {"toolCalls": [{"id": "call_abc", ...}]}}
+--- 第 2 轮（回填工具结果）：HTTP 200
+  text_delta: {"delta": "工具返回了，"}
+  text_delta: {"delta": "时间已拿到。"}
+  done:       {"reason": "stop", "message": {"toolCalls": []}}
+  最终文本：'工具返回了，时间已拿到。'
+--- 通讯日志（task_id=chat-tool-1）：3 条
+  flow_index=1 status=done endpoint=/v1/tasks:stream
+  flow_index=2 status=done endpoint=/v1/tasks:stream
+  flow_index=3 status=done endpoint=/v1/tasks:stream
+```
+
+（脚本里的 `calls_from_done` 与页面同款：从 `done.message.content[]` 筛 `type == "toolCall"`。
+条数比轮数多 1 是因为此前那次调 `done` 帧时踩了 `KeyError` 的试跑也落了一条记录——
+这本身就是 R4 "每次通讯都留一条"的旁证。）
+
+同一循环在**真实浏览器**里也走了一遍（网关 8050 托管刚构建的控制台，勾选「带上 tools」、
+Profile 选「全局模型池」、输入"现在几点？"发送）：
+
+| 观测点 | 结果 |
+|---|---|
+| assistant 气泡个数 | **2 个**（= 循环跑了两轮：先要求调工具，拿到结果后再作答） |
+| 第 1 个气泡 | 带「1 次工具调用」徽标，正文有 `get_time({}) → 2026-09-21T13:05:48.221Z`，终态 `done` |
+| 第 2 个气泡 | 无工具调用徽标，终态 `done` |
+| 页面 / 浏览器控制台报错 | 无 |
+
+**一个真实的坑**：`done.message` 是网关 `asdict` 展开的原始 `AssistantMessage`，工具调用在
+`content[]` 里、块类型是驼峰 `toolCall`；第一版页面按 `message.tool_calls` 去取，结果一个都拿不到，
+循环在第一轮就静默结束（表现是"模型说要调工具，页面却没动作"）。现在这段形状写进了
+`docs/interface.md` 的「`done` / `cancelled` 里的 `message` 形状」，并有用例按实测原文固化。
+
 ## 7. 复现方式
 
 ```bash
@@ -631,7 +686,7 @@ cd webapp && npm install && npm test
 .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
 ```
 
-所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试与缓存过期测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 389 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级；6.7 同理会真的打一次上游并收到 401，因此**也不需要有效密钥**）。
+所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试与缓存过期测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 389 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级；6.7 同理会真的打一次上游并收到 401，因此**也不需要有效密钥**；6.8 用本地假上游，同样不需要真实密钥）。
 
 > 复现 v0.8.2 的 preset 验证时，记得用干净库（`LLM_GW_DB=/tmp/fresh.sqlite3`）：用默认的
 > `llm_gw.sqlite3` 会被里面已保存的模型清单覆盖，看到的仍是旧型号，详见第 6.6 节。

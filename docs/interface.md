@@ -191,10 +191,35 @@ event: usage
 data: {"type": "usage", "usage": {"input": 12, "output": 2, "total_tokens": 14, "cost": 0.0000234}}
 
 event: done
-data: {"type": "done", "reason": "stop", "message": {"text": "你好", "stop_reason": "stop", "terminal": "done", "usage": {...}}}
+data: {"type": "done", "reason": "stop", "message": {"role": "assistant", "content": [{"type": "text", "text": "你好"}], "usage": {...}, "stop_reason": "stop", "error_message": null, "response_model": null, "response_id": null, "raw_stop_reason": "stop", "timestamp": 1789995978.8}}
 
 data: [DONE]
 ```
+
+### `done` / `cancelled` 里的 `message` 形状
+
+`message` 是**原始的 `AssistantMessage` 形状**（网关直接 `asdict` 展开，字段名不转驼峰），因此：
+
+- 内容**只有 `content[]` 数组**这一个入口，块类型是 `text` / `thinking` / `toolCall` / `toolResult`；**没有** `message.text` 这样的平铺字段；
+- 工具调用在 `content[]` 里、块类型是驼峰的 `toolCall`，**顶层没有** `tool_calls`；
+- 是否要求调工具看 `stop_reason`（`tool_use` / `stop` / `length` …），原始原因在 `raw_stop_reason`。
+
+带工具调用的一轮实测原文：
+
+```
+event: toolcall_start
+data: {"type": "toolcall_start", "index": 0, "id": "call_abc", "name": "get_time"}
+
+event: toolcall_end
+data: {"type": "toolcall_end", "index": 0, "id": "call_abc", "name": "get_time", "arguments": {}}
+
+event: done
+data: {"type": "done", "reason": "tool_use", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "call_abc", "name": "get_time", "arguments": {}}], "usage": {...}, "stop_reason": "tool_use", "error_message": null, "response_model": null, "response_id": null, "raw_stop_reason": "tool_calls", "timestamp": 1789995972.7}}
+
+data: [DONE]
+```
+
+客户端编排工具循环时，`toolcall_end` 与 `done.message.content` 里的 `toolCall` 是同一份信息的两种给法：前者随流逐块到达（适合边收边执行），后者是一次性汇总（适合回灌历史）。**网关不会替你跑这个循环**——把 `tool_result` 塞回 `messages` 再调一次是调用方的责任，这也正是 Console 的 Chat 页在演示的事。
 
 ### 客户端断连
 

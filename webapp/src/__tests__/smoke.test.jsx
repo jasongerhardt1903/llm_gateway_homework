@@ -1,7 +1,15 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import App from "../App.jsx";
-import ChatPage from "../pages/ChatPage.jsx";
+import ChatPage, {
+  DEFAULT_TOOLS,
+  MAX_TOOL_ROUNDS,
+  assistant_content,
+  parse_tools,
+  run_local_tool,
+  tool_calls_from_done,
+  tool_message,
+} from "../pages/ChatPage.jsx";
 import SettingsPage from "../pages/SettingsPage.jsx";
 import { ProfileForm, reorder } from "../pages/ProfilesPage.jsx";
 import {
@@ -81,6 +89,82 @@ describe("Chat 直连 agent 接口（需求 管理与交互层第 7 条）", () 
     expect(options.headers.Authorization).toBe("Bearer secret");
     expect(options.headers["x-trace-id"]).toBe("trace-1");
     vi.unstubAllGlobals();
+  });
+});
+
+describe("Chat 页编排多轮 agent（工具调用循环）", () => {
+  it("页面提供工具开关、轮数上限说明与同一会话复用的 task_id", () => {
+    const html = renderToStaticMarkup(<ChatPage />);
+    expect(html).toContain("工具与多轮循环");
+    expect(html).toContain("带上 tools（模型可发起工具调用）");
+    expect(html).toContain(`最多 ${MAX_TOOL_ROUNDS} 轮`);
+    expect(html).toContain("task_id");
+    expect(html).toContain("新会话");
+  });
+
+  it("parse_tools 只做结构校验：合法 / 空 / 非 JSON / 非数组 / 缺 name", () => {
+    expect(parse_tools(DEFAULT_TOOLS).tools).toHaveLength(2);
+    expect(parse_tools(DEFAULT_TOOLS).error).toBe("");
+    expect(parse_tools("").tools).toEqual([]);
+    expect(parse_tools("  ").error).toBe("");
+    expect(parse_tools("{bad").error).toContain("不是合法 JSON");
+    expect(parse_tools('{"name":"x"}').error).toContain("必须是数组");
+    expect(parse_tools('[{"description":"缺 name"}]').error).toContain("第 1 个工具缺少 name");
+  });
+
+  it("run_local_tool 执行本地假工具，未知工具给出可读说明", () => {
+    expect(run_local_tool("echo", { text: "你好" })).toBe("你好");
+    expect(run_local_tool("echo")).toBe("");
+    expect(run_local_tool("get_time")).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(run_local_tool("shell")).toContain("未知工具 shell");
+  });
+
+  it("assistant_content 拼出文本 + tool_call 块，空文本时不带空 text 块", () => {
+    const calls = [{ id: "call_1", name: "echo", arguments: { text: "hi" } }];
+    expect(assistant_content("想一下", calls)).toEqual([
+      { type: "text", text: "想一下" },
+      { type: "tool_call", id: "call_1", name: "echo", arguments: { text: "hi" } },
+    ]);
+    expect(assistant_content("", calls)).toHaveLength(1);
+    expect(assistant_content("", calls)[0].type).toBe("tool_call");
+    // id 缺失也要给空串：schema 允许，且 tool_result 必须能据此对上。
+    expect(assistant_content("", [{ name: "echo" }])[0]).toMatchObject({ id: "", arguments: {} });
+  });
+
+  it("tool_message 的 tool_call_id 与发起调用一致（否则会被当成孤儿结果丢掉）", () => {
+    const call = { id: "call_7", name: "echo", arguments: {} };
+    expect(tool_message(call, "结果")).toEqual({
+      role: "tool",
+      content: [{ type: "tool_result", tool_call_id: "call_7", content: "结果" }],
+    });
+    expect(tool_message({ name: "echo" }, "结果").content[0].tool_call_id).toBe("");
+  });
+
+  it("done 帧里的工具调用能被识读（真实形状：message.content[] 的 toolCall 块）", () => {
+    // 实测原文：工具调用在 message.content[] 里、块类型是驼峰 toolCall，
+    // done 帧顶层没有 tool_calls 字段（网关用 asdict 展开 AssistantMessage）。
+    const frame = {
+      type: "done",
+      reason: "tool_use",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "我看看现在几点" },
+          { type: "toolCall", id: "call_abc", name: "get_time", arguments: {} },
+        ],
+        stop_reason: "tool_use",
+        raw_stop_reason: "tool_calls",
+      },
+    };
+    expect(tool_calls_from_done(frame)).toEqual([
+      { id: "call_abc", name: "get_time", arguments: {} },
+    ]);
+    // 纯文本回复（stop_reason=stop）不该被误认为有工具调用，否则会空转一轮。
+    expect(
+      tool_calls_from_done({ type: "done", message: { content: [{ type: "text", text: "你好" }] } })
+    ).toEqual([]);
+    // 缺 message / content 也不能崩。
+    expect(tool_calls_from_done({ type: "done" })).toEqual([]);
   });
 });
 

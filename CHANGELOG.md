@@ -49,11 +49,22 @@
   `route_mode == "static"` 时提交。
 - 前端新增「设置」页（`webapp/src/pages/SettingsPage.jsx`）承载 R5；`TracePage.jsx`
   新增「通讯日志」视图承载 R4 的双模式（raw data / 渲染后易读）与按字段搜索。
+- **Chat 页编排多轮 agent 工具循环**（`webapp/src/pages/ChatPage.jsx`，**纯前端**）。
+  网关刻意不跑工具循环（`Task.tool_rounds()` 只以"拒绝超限请求"的方式表达上限），
+  因此这一步由调用方实现：页面勾选「带上 tools」后按 `ToolSpec` 数组发起请求，
+  收到 `tool_call` 就在本地执行假工具（内置 `get_time` / `echo`）、把
+  `tool_result` 塞回 `messages` 再调一次，直到模型不再要求调工具或达到前端轮数上限
+  （`MAX_TOOL_ROUNDS = 4`，profile 未配模版时没人兜底）。循环里的多次通讯
+  **共用同一个 `task_id`**，通讯日志才会把它们归到同一组的 `flow_index` 序列；
+  页面上可看到 task_id 并「新会话」换新 id。回灌历史用 agent 的块协议
+  （`assistant` 的 `tool_call` 块 + `tool` 的 `tool_result` 块，`tool_call_id` 必须成对）。
 - 版本号 `0.8.3` → `0.8.4`（`llm_gw/__init__.py`、`pyproject.toml`、
   `webapp/package.json`、`webapp/src/styles.css`、`README.md`、
   `llm_gw/web/app.py`、`llm_gw/harness/service.py`）。
-- 文档同步：`docs/interface.md` 第 2、4 节重写鉴权与通讯日志说明、删除 `/api/chat*`；
-  `README.md` 控制台用法改为六个入口。
+- 文档同步：`docs/interface.md` 第 2、4 节重写鉴权与通讯日志说明、删除 `/api/chat*`，
+  并补「`done` / `cancelled` 里的 `message` 形状」——`message` 是 `asdict` 展开的原始
+  `AssistantMessage`，工具调用在 `content[]` 里、块类型是驼峰 `toolCall`（顶层没有
+  `tool_calls`，也没有平铺的 `text`）；`README.md` 控制台用法改为六个入口。
 
 ### 破坏性变更
 
@@ -69,7 +80,8 @@
 ### 测试
 
 - 后端 **389 passed**，覆盖率 **93%**（`service.py` 97%、`storage.py` 95%、`app.py` 91%）。
-- 前端 **24 passed**（vitest），`npm run build` 成功。
+- 前端 **30 passed**（vitest，其中 Chat 多轮工具循环 6 例），`npm run build` 成功。
+- 端到端另跑通一次真实浏览器里的两轮工具循环（见 `docs/test-evidence.md` 第 6.8 节）。
 
 ## 0.8.3
 
