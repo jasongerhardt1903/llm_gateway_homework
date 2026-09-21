@@ -2,6 +2,44 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.8.2
+
+把 DeepSeek preset 的型号清单换成官方文档当前的型号。0.8.0 起的清单里写的
+`deepseek-chat` / `deepseek-reasoner` 已经下线，下拉菜单与能力表因此一直指着一组
+调用不通的名字；上游 `/models` 拉不到时（本机密钥失效就是这种情况）回退到的
+正是这份过时清单，问题会被放大。
+
+清单与价格以官方文档为准（`https://api-docs.deepseek.com` 的
+"Your First API Call" 与 "Models & Pricing"）。
+
+### 变更
+
+- **型号换成 `deepseek-flash` 与 `deepseek-v4-pro`**（`llm_gw/adapter/presets/deepseek.py`）：
+  两者共用上下文 1M、最大输出 384K；官方型号版本分别是 DeepSeek-V4.1-Flash 与
+  DeepSeek-V4-Pro-0813。
+- **能力差异如实声明**：`deepseek-v4-pro` 不支持视觉，`deepseek-flash` 支持；
+  两者都支持工具调用与思考模式。旧的 `deepseek-reasoner` 曾以"不支持 function
+  calling"作为能力表必须如实反映供应商限制的样例，该样例改由视觉能力承担。
+- 版本号 `0.8.1` → `0.8.2`（`llm_gw/__init__.py`、`pyproject.toml`、
+  `webapp/package.json`、`README.md`）。
+
+### 设计取舍
+
+- **`CostRates` 取峰值价**：官方计费分峰值 / 非峰值两档（非峰值为峰值的一半，
+  峰值为 UTC 周一至周五 01:00-04:00 与 06:00-10:00），而 `CostRates` 只能存一个
+  单价。取峰值价是**有意让成本估算偏高**——预算口径上低估比高估危险得多。
+- **`json_schema` 仍为 `False`**：官方 JSON Output 依旧只提供
+  `response_format={"type": "json_object"}`，没有严格 JSON Schema，请求翻译继续
+  走降级路径（`openai_compat.py` 据 `capabilities.json_schema` 自动切换）。
+- **不再列出历史名称**：`deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp`
+  官方仍接受，但实际由 DeepSeek-V4.1-Flash 提供服务并按 Flash 价计费，不是独立
+  型号，列出来只会让人以为存在第三个模型。
+- **`base_url` 保持 `https://api.deepseek.com/v1`**：文档现在只写不带 `/v1` 的
+  地址，但实测两者都返回 401（路径都存在）、功能一致，因此按"只改动必须改动的
+  代码"不动它。
+- **不迁移已存数据**：用户此前保存的 `deepseek-chat` 模型仍在库里，`find_model`
+  找不到它时会按未知型号处理（界面标 `known=false` 并提示人工确认），不做静默改写。
+
 ## 0.8.1
 
 给 0.8.0 的模型清单查询加一层**进程内短时缓存**。0.8.0 每次进「新增模型」

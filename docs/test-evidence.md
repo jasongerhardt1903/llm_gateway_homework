@@ -1,6 +1,10 @@
 # 测试证据
 
-> 本文件是 **v0.8.1** 的存档。v0.8.1 给 v0.8.0 的模型清单查询加了进程内短时缓存
+> 本文件是 **v0.8.2** 的存档。v0.8.2 把 DeepSeek preset 的型号换成官方文档当前的
+> `deepseek-flash` 与 `deepseek-v4-pro`（旧清单里的 `deepseek-chat` /
+> `deepseek-reasoner` 已下线），能力表据官方文档如实声明（v4-pro 不支持视觉）；
+> 用例数不变（后端 **372**、前端 15），覆盖率 92%——这是数据订正，没有新增接口。
+> v0.8.1 给 v0.8.0 的模型清单查询加了进程内短时缓存
 > （成功 300 秒 / 失败 30 秒，键含 `base_url`），后端用例由 367 增至 **372**
 > （`tests/web/test_model_discovery.py` +5），覆盖率 92%；前端用例数不变（15）。
 > v0.8.0 落实需求"模型管理层"第 1、2 条与"管理与交互层"
@@ -51,7 +55,7 @@ llm_gw/adapter/discovery.py                        101      6    94%   231-232, 
 llm_gw/adapter/factory.py                           14      0   100%
 llm_gw/adapter/presets/__init__.py                   0      0   100%
 llm_gw/adapter/presets/anthropic.py                  8      0   100%
-llm_gw/adapter/presets/deepseek.py                   8      0   100%
+llm_gw/adapter/presets/deepseek.py                  10      0   100%
 llm_gw/adapter/presets/openai.py                     8      0   100%
 llm_gw/adapter/presets/registry.py                  39      2    95%   51, 65
 llm_gw/adapter/protocols/__init__.py                 0      0   100%
@@ -86,8 +90,8 @@ llm_gw/web/__init__.py                               0      0   100%
 llm_gw/web/api_models.py                            93      1    99%   142
 llm_gw/web/app.py                                  237     26    89%   131, 167, 198, 201-202, 222, 233, 241, 281-282, 327-328, 342, 351, 363-364, 369, 377, 425, 427, 429, 431, 433, 435, 446, 453
 ------------------------------------------------------------------------------
-TOTAL                                             3210    258    92%
-372 passed in 2.19s
+TOTAL                                             3212    258    92%
+372 passed in 2.18s
 ```
 
 **372 passed，0 failed，92% 覆盖率。**
@@ -129,7 +133,7 @@ preset 清单并如实回报 `error`"，已由 `test_provider_models_falls_back_
 | `tests/web/test_web_api.py` | 28 | |
 | `tests/test_phase0_infra.py` | 4 | |
 | `tests/test_runtime.py` | 11 | v0.7.0：agent API 与控制台同进程共存 |
-| **合计** | **372** | **+5** |
+| **合计** | **372** | **0（v0.8.2：仅换 preset 数据）** |
 
 ## 3. 需求要求的六类测试
 
@@ -153,7 +157,7 @@ preset 清单并如实回报 `error`"，已由 `test_provider_models_falls_back_
 | `tests/harness/test_service.py` | 客户端断连取消上游、流内 error 不发 `[DONE]`、已流式输出后不盲目重生成、认证失败降级不阻塞且落库、`warnings` 随响应返回 |
 | `tests/core/test_events.py` | 单一终态不变式、`end` 后 push 丢弃 |
 | `tests/web/test_web_api.py` | 模型 CRUD、**密钥只写不回显 / 缺省不修改 / 空串清除**、profile CRUD 往返、Dashboard、Trace 搜索、Chat SSE 代理 |
-| `tests/web/test_model_discovery.py` | v0.8.0 模型管理层：高级配置项按协议声明差异（OpenAI 不含 `top_k`）、思考模式互斥项、`auth_headers` 逐协议、上游模型清单优先于 preset 与降级、未知型号标记 `known=false` 且不编造能力、Provider 级查询复用已保存密钥、未知供应商 404、**连接测试的最小请求（`max_tokens=1` / `stream=False` / `Bearer`）**、401 → `AUTH_INVALID`、连不上 → `CONN_FAILED`、`/api/meta` 版本与更新日志；v0.8.1 加清单缓存——TTL 内只查一次上游、成功与失败两条 TTL 各自到期后重新查、`base_url` 不同不吃同一份缓存、返回副本 |
+| `tests/web/test_model_discovery.py` | v0.8.0 模型管理层：高级配置项按协议声明差异（OpenAI 不含 `top_k`）、思考模式互斥项、`auth_headers` 逐协议、上游模型清单优先于 preset 与降级、未知型号标记 `known=false` 且不编造能力、Provider 级查询复用已保存密钥、未知供应商 404、**连接测试的最小请求（`max_tokens=1` / `stream=False` / `Bearer`）**、401 → `AUTH_INVALID`、连不上 → `CONN_FAILED`、`/api/meta` 版本与更新日志；v0.8.1 加清单缓存——TTL 内只查一次上游、成功与失败两条 TTL 各自到期后重新查、`base_url` 不同不吃同一份缓存、返回副本；v0.8.2 在 `tests/adapter/test_adapter_contract.py` 里把"能力必须如实反映供应商限制"的样例从已下线的 `deepseek-reasoner`（不支持工具）换成 `deepseek-v4-pro`（不支持视觉） |
 | `tests/test_runtime.py` | 组合根：lifespan 挂载、配置跨重启恢复、根挂载不吞 404、**agent API 与控制台同进程共存**、**密钥优先级（模型 > 环境变量）** |
 | `tests/test_phase0_infra.py` | `FakeClock` 不等待、`sse_transport` 重放分片、`scripted_transport` 按序返回错误 |
 
@@ -175,6 +179,13 @@ v0.8.1 的清单缓存沿用同一套约定：`ModelCatalogCache` 的时钟可�
 `tests/web/test_model_discovery.py` 用 `FakeClock` 把时间直接推到 TTL 之后
 （`await clock.sleep((CACHE_TTL_OK + 1) * 1000)`，FakeClock 的时间随 sleep 推进），
 因此"缓存过期"是被**断言**出来的，而不是等 5 分钟等出来的。
+
+v0.8.2 只改 preset 数据，因此把原来那条"能力必须如实反映供应商限制"的用例换了
+主体：`deepseek-reasoner` 已下线，其"不支持 function calling"的事实不再存在，
+改由官方文档明确写出的视觉能力差异承担
+（`test_deepseek_v4_pro_declares_no_vision_support` 断言 `v4-pro` 为 `False`、
+`flash` 为 `True`）。**没有为了凑数而新增用例**——预设数据本身不适合断言价格数字，
+那只会让文档一改就要改测试。
 
 ## 5. 前端冒烟
 
@@ -352,7 +363,7 @@ $ LLM_GW_AGENT_PASSWORD=verify-pass LLM_GW_DB=/tmp/gw_auth_verify.sqlite3 \
 同一语义在 `tests/harness/test_agent_auth.py`（7 例，含"未配置口令时放行"）与
 `tests/test_runtime.py::test_runtime_guards_agent_api_but_not_console` 里固化。
 
-### 6.6 模型发现、连接测试与清单缓存（v0.8.0 / v0.8.1）
+### 6.6 模型发现、连接测试与清单缓存（v0.8.0 / v0.8.1 / v0.8.2）
 
 这一节必须用**真实进程**验证：新增的三个端点分别依赖"后端进程能出网访问供应商"和
 "静态产物里真的挂了新页面"，两者都不是单元测试能证明的。
@@ -392,6 +403,40 @@ $ ./run.sh          # 127.0.0.1:8000，README 推荐的启动方式
 | 协议下拉显示 `openai-completions` | PASS |
 | 填写模型名称 `deepseek-chat` 后点「测试连接」，出现结果横幅「连接失败：AUTH_INVALID：provider (401): Authentication Fails (governor)」 | **PASS（上一轮的 FAIL 已消除）** |
 | 浏览器控制台无 JS 报错 | PASS |
+
+**v0.8.2 的真实进程验证**：preset 换型号后，用干净库起一个临时实例，确认清单与能力
+按官方文档加载（本机密钥失效，上游 401 → 降级到 preset，正好把 preset 内容露出来）：
+
+```bash
+$ LLM_GW_DB=/tmp/fresh.sqlite3 .venv/bin/python -m uvicorn \
+    llm_gw.runtime:create_runtime_app --factory --port 8011
+$ curl -s localhost:8011/api/models | ...   # 只列 deepseek 部分
+  deepseek   deepseek-flash               ctx=  1000000 max=  384000
+  deepseek   deepseek-v4-pro              ctx=  1000000 max=  384000
+
+$ curl -s localhost:8011/api/providers/deepseek/models
+  source: preset
+  error : https://api.deepseek.com/v1/models 返回 HTTP 401：Authentication Fails (governor)
+  deepseek-flash       known=True  vision=True  tools=True reasoning=True
+  deepseek-v4-pro      known=True  vision=False tools=True reasoning=True
+```
+
+**这里暴露了一个必须在文档里说清的坑**：`restore_config` 在 config 表非空时**整体替换**
+注册表（`llm_gw/web/app.py` 的 `registry.models = [...]`），因此**用户保存过模型之后，
+preset 的更新不会再出现在界面上**。本机实测（`llm_gw.sqlite3` 里存着 9 月 19 日保存的
+5 个模型）在升级到 0.8.2 并重启后，`/api/models` 仍然是旧清单：
+
+```
+openai     gpt-4o-mini                  ctx=   128000 max=   16384
+openai     gpt-4o                       ctx=   128000 max=   16384
+deepseek   deepseek-chat                ctx=    64000 max=    8192   ← 已下线，来自数据库
+anthropic  claude-3-5-haiku-20241022    ctx=   200000 max=    8192
+deepseek   deepseek-flash               ctx=        0 max=  202512   ← 用户自建，覆盖了 preset
+```
+
+这是"用户配置优先于 preset 默认值"的必然结果，不是缺陷，但**升级 preset 后必须清掉
+`config` 表里的 `models` 行（或删库重来）才会看到新清单**。注意 profile 里若引用了
+被清掉的标签，需要一并调整。
 
 **清单缓存（v0.8.1）同样用真实进程验证**——缓存是"进程内状态"，单元测试证明不了
 它在真实服务里真的生效。重启服务后连续请求，看耗时落差：
@@ -442,3 +487,6 @@ cd webapp && npm install && npm test
 ```
 
 所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试与缓存过期测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 372 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级，因此**也不需要有效密钥**）。
+
+> 复现 v0.8.2 的 preset 验证时，记得用干净库（`LLM_GW_DB=/tmp/fresh.sqlite3`）：用默认的
+> `llm_gw.sqlite3` 会被里面已保存的模型清单覆盖，看到的仍是旧型号，详见第 6.6 节。

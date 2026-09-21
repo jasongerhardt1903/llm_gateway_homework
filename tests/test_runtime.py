@@ -49,7 +49,7 @@ async def test_lifespan_initialises_storage_and_serves_console(tmp_path) -> None
         response = await _get(app, "/api/models")
         assert response.status_code == 200
         # preset 模型清单在启动时被装载进注册表。
-        assert {model["id"] for model in response.json()} >= {"gpt-4o-mini", "deepseek-chat"}
+        assert {model["id"] for model in response.json()} >= {"gpt-4o-mini", "deepseek-flash"}
 
 
 async def test_config_survives_restart(tmp_path) -> None:

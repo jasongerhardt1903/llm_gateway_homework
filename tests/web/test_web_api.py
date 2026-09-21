@@ -117,7 +117,7 @@ async def test_list_models_returns_presets(model, storage):
         response = await client.get("/api/models")
 
     assert response.status_code == 200
-    assert {item["id"] for item in response.json()} >= {"gpt-4o-mini", "deepseek-chat"}
+    assert {item["id"] for item in response.json()} >= {"gpt-4o-mini", "deepseek-flash"}
 
 
 async def test_create_model_persists_and_registers(model, storage):

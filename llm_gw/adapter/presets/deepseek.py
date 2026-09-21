@@ -7,8 +7,19 @@ OpenAI 兼容协议。因此这里只描述差异：
 * baseUrl 不同；
 * 只支持 ``response_format={"type": "json_object"}``，**不支持严格 JSON Schema**
   （``capabilities.json_schema=False``）——请求翻译据此自动降级；
-* ``deepseek-reasoner`` 输出 ``reasoning_content``（映射为思考块），且不支持
-  function calling。
+* 两个型号都支持思考模式（默认开启），思考内容走 ``reasoning_content``
+  （映射为思考块），因此 ``capabilities.reasoning=True``；
+* ``deepseek-v4-pro`` **不支持视觉**，``deepseek-flash`` 支持。
+
+清单与价格以官方文档为准（``https://api-docs.deepseek.com`` 的
+"Your First API Call" 与 "Models & Pricing"）：上下文 1M、最大输出 384K。
+旧的 ``deepseek-chat`` / ``deepseek-reasoner`` 已下线；``deepseek-v4-flash``
+与 ``deepseek-v4-flash-vision-exp`` 属于历史名称，官方仍在接受但实际由
+DeepSeek-V4.1-Flash 提供服务，因此不再作为独立型号列出。
+
+官方计费分**峰值 / 非峰值**两档（非峰值为峰值的一半，峰值为 UTC 周一至周五
+01:00-04:00 与 06:00-10:00），而 :class:`CostRates` 只能存一个单价，这里取
+**峰值价**：成本估算宁可偏高，也不要系统性低估。
 """
 
 from __future__ import annotations
@@ -21,33 +32,40 @@ __all__ = ["PRESET", "MODELS"]
 _API = "openai-completions"
 _BASE_URL = "https://api.deepseek.com/v1"
 
+#: 官方文档给出的两个型号共用同一组上限：上下文 1M、最大输出 384K。
+_CONTEXT_WINDOW = 1_000_000
+_MAX_TOKENS = 384_000
+
 MODELS: tuple[Model, ...] = (
     Model(
-        id="deepseek-chat",
-        name="DeepSeek Chat",
+        id="deepseek-flash",
+        name="DeepSeek Flash",
         api=_API,
         provider="deepseek",
         base_url=_BASE_URL,
-        context_window=64_000,
-        max_tokens=8_192,
-        cost=CostRates(input=0.27, output=1.10, cache_read=0.07),
+        context_window=_CONTEXT_WINDOW,
+        max_tokens=_MAX_TOKENS,
+        # 峰值价（美元 / 百万 token）：输入 0.30、输出 1.20、缓存命中 0.006。
+        cost=CostRates(input=0.30, output=1.20, cache_read=0.006),
+        # 官方型号版本 DeepSeek-V4.1-Flash；支持工具调用与视觉，仅 json_object。
         capabilities=Capabilities(
-            sse=True, streaming=True, tools=True, json_schema=False, vision=False, reasoning=False
+            sse=True, streaming=True, tools=True, json_schema=False, vision=True, reasoning=True
         ),
         display_provider="DeepSeek",
     ),
     Model(
-        id="deepseek-reasoner",
-        name="DeepSeek Reasoner",
+        id="deepseek-v4-pro",
+        name="DeepSeek V4 Pro",
         api=_API,
         provider="deepseek",
         base_url=_BASE_URL,
-        context_window=64_000,
-        max_tokens=8_192,
-        cost=CostRates(input=0.55, output=2.19, cache_read=0.14),
-        # reasoner 不支持 function calling，能力注册表据此把它排除在工具任务之外。
+        context_window=_CONTEXT_WINDOW,
+        max_tokens=_MAX_TOKENS,
+        # 峰值价：输入 1.32、输出 3.96、缓存命中 0.044。
+        cost=CostRates(input=1.32, output=3.96, cache_read=0.044),
+        # 官方型号版本 DeepSeek-V4-Pro-0813；**不支持视觉**，其余与 flash 一致。
         capabilities=Capabilities(
-            sse=True, streaming=True, tools=False, json_schema=False, vision=False, reasoning=True
+            sse=True, streaming=True, tools=True, json_schema=False, vision=False, reasoning=True
         ),
         display_provider="DeepSeek",
     ),
@@ -60,5 +78,5 @@ PRESET = Preset(
     base_url=_BASE_URL,
     env_key="DEEPSEEK_API_KEY",
     models=MODELS,
-    notes="OpenAI 兼容协议；仅支持 json_object，不支持严格 JSON Schema。",
+    notes="OpenAI 兼容协议；仅支持 json_object，不支持严格 JSON Schema；v4-pro 不支持视觉。",
 )

@@ -29,7 +29,7 @@ def openai_model():
 
 @pytest.fixture
 def deepseek_model():
-    return _model("deepseek", "deepseek-chat")
+    return _model("deepseek", "deepseek-flash")
 
 
 @pytest.fixture

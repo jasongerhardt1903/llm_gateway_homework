@@ -395,7 +395,7 @@ function ProfileForm({ models, initial = {}, submitLabel, onSubmit }) {
               <Input
                 value={staticText}
                 onChange={(e) => setStaticText(e.target.value)}
-                placeholder="openai/gpt-4o-mini, deepseek/deepseek-chat"
+                placeholder="openai/gpt-4o-mini, deepseek/deepseek-flash"
               />
             </Field>
           )}

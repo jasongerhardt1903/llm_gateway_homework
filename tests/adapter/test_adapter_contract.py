@@ -343,19 +343,25 @@ def test_anthropic_maps_refusal_to_error_stop_reason(anthropic_model, make_adapt
 
 def test_deepseek_is_openai_compatible_preset_not_separate_protocol():
     """DeepSeek 是 preset 而非独立协议——与参考项目 pi 的结论一致。"""
-    model = find_model("deepseek", "deepseek-chat")
+    model = find_model("deepseek", "deepseek-flash")
 
     assert model is not None
     assert model.api == "openai-completions"
     assert model.base_url.startswith("https://api.deepseek.com")
 
 
-def test_deepseek_reasoner_declares_no_tool_support():
-    """能力注册表要如实反映供应商限制，否则路由会把工具任务派给它。"""
-    reasoner = find_model("deepseek", "deepseek-reasoner")
+def test_deepseek_v4_pro_declares_no_vision_support():
+    """能力注册表要如实反映供应商限制，否则路由会把带图任务派给它。
 
-    assert reasoner.capabilities.tools is False
-    assert reasoner.capabilities.reasoning is True
+    官方文档里 ``deepseek-v4-pro`` 明确不支持视觉，``deepseek-flash`` 支持；
+    这是两个型号唯一的能力差异，用它同时固化"能力必须按型号分别声明"。
+    """
+    pro = find_model("deepseek", "deepseek-v4-pro")
+    flash = find_model("deepseek", "deepseek-flash")
+
+    assert pro.capabilities.vision is False
+    assert flash.capabilities.vision is True
+    assert pro.capabilities.tools is True
 
 
 def test_all_preset_models_resolve_to_a_known_protocol():
