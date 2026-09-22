@@ -11,6 +11,11 @@
 3. **可观测**：每次调用（含流式）都落一条 :class:`CallRecord`，TTFT 以
    **第一个有业务意义的 delta** 为准，不把 ``start`` 事件算作首 token。
 
+**一次尝试一条记录**：候选链上的每次尝试各落一条 :class:`CallRecord`（共享同一个
+``trace_id``，用 ``attempt_index`` 标位次），沿途带上该次尝试的 ``route`` 决策快照与
+``degraded_from``。只落最终那一条会让"先试了 A 失败、又试了 B 成功"缩成一行，失败、
+重试与降级在 Trace 里全部不可见——而每一次尝试都是真实消耗过配额的上游调用。
+
 非流式调用还会把执行层的处置事实（重试次数、是否降级、最终处置、告警）写进
 ``CallRecord.resilience`` 并在响应里回传 ``warnings``——需求要求"妥善记录"
 重试 / 降级 / 报错三选一的结果。
@@ -30,7 +35,7 @@
 查不到，而 agent 最常踩的恰恰是 schema 错误。落库的状态是通讯的真实结局，不是 HTTP 码：
 非流式调用模型失败时 HTTP 仍是 200（状态码只表达"请求本身合法"）。
 
-版本：0.8.5
+版本：0.8.8
 """
 
 from __future__ import annotations
@@ -52,13 +57,24 @@ from .. import __version__
 from ..core.errors import ErrorCode, ErrorDisposition
 from ..core.events import AssistantEvent, ErrorEvent
 from ..core.messages import AssistantMessage, Model
-from ..core.schema import SchemaViolation, SyntaxViolation, Task, validate_schema, validate_syntax
-from ..core.telemetry import CallRecord, LatencyBreakdown, PromptInfo, ResilienceInfo
+from ..core.schema import (
+    PromptRef,
+    SchemaViolation,
+    SyntaxViolation,
+    Task,
+    output_validity,
+    validate_schema,
+    validate_syntax,
+)
+from ..core.telemetry import CallRecord, LatencyBreakdown, PromptInfo, ResilienceInfo, RouteInfo
 from ..harness.decisions import disposition_for
 from ..harness.sse import encode_sse
-from ..router.router import ExecutionTrace, Router
+from ..router.router import AttemptResult, ExecutionTrace, Router
+from ..router.rules import Decision
 from ..util.clock import Clock, RealClock
+from .prompts import PromptTemplateError
 from .query import Query
+from .ratelimit import ModelRateLimiter, RateLimitDecision
 from .storage import Storage
 
 __all__ = [
@@ -97,11 +113,15 @@ class GatewayService:
         storage: Storage | None = None,
         *,
         clock: Clock | None = None,
+        limiter: ModelRateLimiter | None = None,
     ) -> None:
         self.router = router
         self.storage = storage
         self.clock: Clock = clock or RealClock()
         self.query = Query(storage) if storage is not None else None
+        #: 按模型独立的令牌桶。默认不限额（``RateLimit()` 未启用），真实进程在组合根
+        #: 里按环境变量注入——本地开发不该被限流绊住。
+        self.limiter = limiter or ModelRateLimiter()
         #: 最近一次非流式调用产生的告警（如"认证失败已换模型，未阻塞"）。
         #: 挂在服务上而不是扩展 ``AssistantMessage``——后者是 adapter 共享的传输
         #: 模型，加字段会牵动所有供应商的序列化。
@@ -142,26 +162,83 @@ class GatewayService:
             return "env"
         return "console" if self.console_password else "none"
 
+    # -- 提示词模板（需求「提示词版本管理」：存储 / 变量替换 / 版本引用） -------
+
+    async def resolve_prompt(self, task: Task) -> Task:
+        """把 ``task.prompt`` 引用渲染成 system 提示，其余字段原样保留。
+
+        ``version`` 缺省时取最新版本；模板里用 ``{{变量}}`` 占位，缺变量/多给变量都
+        由 :meth:`PromptTemplate.render` 报错（宁可比对失败，也不要静默产出残缺提示）。
+        渲染结果**追加在原 system 之前**，让模板当背景、调用方当即时指令。
+        """
+        ref = task.prompt
+        if ref is None or self.storage is None:
+            return task
+        template = await self.storage.prompt(ref.name, ref.version)
+        if template is None:
+            target = f"{ref.name}@{ref.version}" if ref.version else ref.name
+            raise PromptTemplateError(f"模板 {target} 不存在")
+        rendered = template.render(ref.variables)
+        system = rendered if not task.input.system else f"{rendered}\n\n{task.input.system}"
+        return task.model_copy(
+            update={
+                "input": task.input.model_copy(update={"system": system}),
+                # 记录**实际使用**的版本：缺省引用在解析后才确定落到了哪一版。
+                "prompt": PromptRef(
+                    name=template.name, version=template.version, variables=ref.variables
+                ),
+            }
+        )
+
+    # -- 限流（需求「韧性基础」：按模型独立限流，超限 429） -----------------
+
+    def check_rate_limit(self, task: Task) -> RateLimitDecision | None:
+        """按本 task 即将落到的模型取一个令牌。
+
+        要先路由才知道"是哪个模型"，因此这里算一次路由决策。路由是纯内存查表（无
+        I/O），HTTP 层随后真正执行时会再算一次；两次之间注册表理论上可能被并发调用
+        改动（``record_usage`` 参与动态打分），但桶是按模型各自持有的，即便落到另一个
+        模型，限流也只作用在它自己身上，不会误伤。
+
+        返回 ``None`` 表示没有可用候选——这种情况该由路由如实报
+        ``ROUTE_NO_CANDIDATE``，限流不该抢在它前面给出一个更容易误导的 429。
+        """
+        decision = self.router.route(task)
+        if decision.primary is None:
+            return None
+        return self.limiter.check(decision.primary.label())
+
     # -- 非流式 ------------------------------------------------------------
 
     async def complete(self, task: Task, *, trace_id: str | None = None) -> AssistantMessage:
-        started = self.clock.now()
         decision = self.router.route(task)
         # 执行层的处置事实（重试次数 / 是否降级 / 最终处置 / 告警）经由 trace 回传，
         # 否则落库的 attempt/retry/fallback 恒为默认值，"妥善记录"就是空话。
         trace = ExecutionTrace()
-        message = await self.router.execute(task, trace=trace)
+
+        async def on_attempt(attempt: AttemptResult) -> None:
+            """候选链上的每次尝试各落一条记录。
+
+            只落最终那一条（旧做法）会让"先试了 A 失败、又试了 B 成功"在 Trace 里缩成
+            一行，失败与重试完全不可见；而 A 那次是真实消耗过配额的上游调用。
+            """
+            await self._record(
+                task=task,
+                decision=decision,
+                message=attempt.message,
+                model=attempt.model,
+                trace_id=trace_id,
+                started=attempt.started,
+                ended=attempt.ended,
+                attempt_index=attempt.index,
+                degraded_from=attempt.degraded_from,
+                attempt=attempt.attempt,
+                retry=attempt.retry,
+                disposition=attempt.disposition,
+            )
+
+        message = await self.router.execute(task, trace=trace, on_attempt=on_attempt)
         self.last_warnings = list(trace.warnings)
-        await self._record(
-            task=task,
-            decision=decision,
-            message=message,
-            started=started,
-            first_delta_at=None,
-            chunk_count=0,
-            trace_id=trace_id,
-            trace=trace,
-        )
         return message
 
     # -- 流式 --------------------------------------------------------------
@@ -191,34 +268,40 @@ class GatewayService:
         """
         started = self.clock.now()
         decision = self.router.route(task)
-        first_delta_at: float | None = None
         chunk_count = 0
         # attempts 从 1 起算：第一条流无论成功与否都算一次真实调用。
         trace = ExecutionTrace(attempts=1)
         # 实际发给客户端的字节，供落 exchanges 用。
         sent: list[bytes] = []
 
-        plan: list[Model | None] = [decision.primary]
-        if decision.backup is not None:
-            plan.append(decision.backup)
+        # 整条候选链：profile 里配了几个模型就有几次机会（主备只是前两名）。
+        plan: list[Model | None] = list(decision.candidates) or [decision.primary]
 
         stream = None
         served_model: Model | None = None
+        served_index = 1
+        # 上一个失败的模型标签，作为本次尝试的 ``degraded_from``。
+        previous = ""
+        attempt_started = self.clock.now()
+        attempt_first_delta_at: float | None = None
 
         try:
-            for index, model in enumerate(plan):
-                nxt = plan[index + 1] if index + 1 < len(plan) else None
+            for index, model in enumerate(plan, start=1):
+                nxt = plan[index] if index < len(plan) else None
+                attempt_started = self.clock.now()
+                attempt_first_delta_at = None
                 _, current = self.router.stream(task, model=model)
                 stream = current
                 served_model = model
+                served_index = index
                 emitted = False
                 degrade_code: ErrorCode | None = None
 
                 async for event in current:
                     if event.type in BUSINESS_DELTA_TYPES:
                         emitted = True
-                        if first_delta_at is None:
-                            first_delta_at = self.clock.now()
+                        if attempt_first_delta_at is None:
+                            attempt_first_delta_at = self.clock.now()
                     # 首 delta 之前、且还有下一个候选、且该错误允许换模型 → 放弃这条流。
                     if (
                         event.type == "error"
@@ -236,18 +319,41 @@ class GatewayService:
                     # 迭代自然结束：终态已转发给客户端，收工。
                     break
 
-                # 命中"首 delta 前降级"：取消本次上游，记下弹性事实，换下一个模型重开。
+                # 命中"首 delta 前降级"：取消本次上游，**先把这次失败的尝试落一条记录**，
+                # 再换下一个模型重开。不落的话"试过但失败"在 Trace 里没有痕迹，只剩最终
+                # 成功那一行，"降级到底有没有生效"就无从判断。
                 with contextlib.suppress(Exception):
                     await current.cancel()
+                ended = self.clock.now()
+                abandoned = current.result_nowait()
+                if abandoned is None:  # pragma: no cover - error 终态已入流，结果理应就绪
+                    abandoned = _error_message(
+                        f"{degrade_code.value if degrade_code else ErrorCode.UNKNOWN.value}: 首 token 前失败"
+                    )
+                disposition = disposition_for(degrade_code).value if degrade_code else ""
+                served_from = model.label() if model is not None else ""
+                await self._record(
+                    task=task,
+                    decision=decision,
+                    message=abandoned,
+                    model=model,
+                    trace_id=trace_id,
+                    started=attempt_started,
+                    ended=ended,
+                    attempt_index=index,
+                    degraded_from=previous,
+                    disposition=disposition,
+                )
                 trace.fallback = True
                 trace.attempts += 1
-                trace.degraded_from = served_model.label() if served_model else ""
+                trace.degraded_from = served_from
                 trace.degraded_to = nxt.label()  # type: ignore[union-attr] - nxt 非空由上面的条件保证
-                trace.disposition = disposition_for(degrade_code).value  # type: ignore[arg-type]
+                trace.disposition = disposition
                 trace.warnings.append(
                     f"{degrade_code.value if degrade_code else ErrorCode.UNKNOWN.value}: "
                     f"首 token 前失败，已降级 {trace.degraded_from} → {trace.degraded_to}"
                 )
+                previous = served_from
         except (asyncio.CancelledError, GeneratorExit):
             # 客户端断开：取消上游请求，释放并发槽。此处不能再 yield，只补一条
             # "本次通讯被中断"的记录——否则最需要排查的那类中断在日志里反而没有痕迹。
@@ -275,12 +381,14 @@ class GatewayService:
             task=task,
             decision=decision,
             message=message,
-            started=started,
-            first_delta_at=first_delta_at,
-            chunk_count=chunk_count,
-            trace_id=trace_id,
-            trace=trace,
             model=served_model,
+            trace_id=trace_id,
+            started=attempt_started,
+            ended=self.clock.now(),
+            first_delta_at=attempt_first_delta_at,
+            chunk_count=chunk_count,
+            attempt_index=served_index,
+            degraded_from=previous,
         )
         await self._record_exchange(
             task=task,
@@ -378,30 +486,42 @@ class GatewayService:
         self,
         *,
         task: Task,
-        decision,
+        decision: Decision,
         message: AssistantMessage,
-        started: float,
-        first_delta_at: float | None,
-        chunk_count: int,
+        model: Model | None,
         trace_id: str | None,
-        trace: ExecutionTrace | None = None,
-        model: Model | None = None,
+        started: float,
+        ended: float | None = None,
+        first_delta_at: float | None = None,
+        chunk_count: int = 0,
+        attempt_index: int = 1,
+        degraded_from: str = "",
+        attempt: int = 1,
+        retry: int = 0,
+        disposition: str = "",
     ) -> None:
+        """落**一次尝试**的调用记录（候选链上有几次尝试就落几行，共享 trace_id）。
+
+        ``model`` 是本次尝试真正打到的模型，**不能**照抄 ``decision.primary``：降级之后
+        两者不同，照抄会把"降到了哪个模型"记成没降级。
+        """
         if self.storage is None:
             return
 
-        ended = self.clock.now()
-        # 实际服务本次请求的模型：流式降级后它不是 ``decision.primary``，
-        # 若照抄主路由就会把"降级到了哪个模型"记成没降级。
-        model = model if model is not None else decision.primary
+        ended = self.clock.now() if ended is None else ended
         record = CallRecord(
             trace_id=trace_id or "",
             run_id=str(task.metadata.get("run_id", "")),
             step_id=str(task.metadata.get("step_id", "")),
             call_id=f"call-{uuid.uuid4().hex[:12]}",
             prompt=PromptInfo(
-                name=str(task.metadata.get("prompt_name", "")),
-                version=str(task.metadata.get("prompt_version", "")),
+                # 结构化引用优先：``resolve_prompt`` 会把缺省版本补成实际版本，
+                # 因此这里记的 name/version 是真正渲染过的那一版。仅当调用方仍走
+                # 非结构化的 metadata 约定时，才回落到 metadata 里的自由文本。
+                name=str(task.prompt.name)
+                if task.prompt
+                else str(task.metadata.get("prompt_name", "")),
+                version=(str(task.prompt.version or "") if task.prompt else str(task.metadata.get("prompt_version", ""))),
                 sha256=task.prompt_fingerprint(),
                 schema_version=str(task.metadata.get("prompt_schema_version", "")),
             ),
@@ -409,28 +529,51 @@ class GatewayService:
             provider=model.provider if model else "",
             model=model.id if model else "",
             api=model.api if model else "",
+            # 路由决策快照随每条记录落库："为什么选它 / 为什么不选它"要能在线下复盘，
+            # 否则线上只能看到一个模型名，决策过程无从还原。
+            route=RouteInfo(
+                reason=decision.reason,
+                candidates=[candidate.label() for candidate in decision.candidates],
+                rejected=[
+                    {"model": rejected.label(), "reason": reason}
+                    for rejected, reason in decision.rejected
+                ],
+            ),
             usage=message.usage,
             latency=LatencyBreakdown(
                 ttft_ms=(first_delta_at - started) * 1000.0 if first_delta_at is not None else 0.0,
                 generation_ms=(ended - first_delta_at) * 1000.0 if first_delta_at is not None else 0.0,
                 total_ms=(ended - started) * 1000.0,
             ),
-            # 弹性维度真实落库：重试次数、是否降级、最终处置。流式路径只在
-            # "首 delta 前"降级，因此 attempt 记的是实际开过的流数、disposition 记的是
-            # 触发降级的那个处置；没降级时 trace 保持默认 1/0/0。
+            # 弹性维度记的是**这一次尝试**：这一跳对上游调了几次、是否重试、判定为什么处置、
+            # 排在候选链第几位、由谁降级而来。整条请求的汇总见执行层的 ``ExecutionTrace``。
             resilience=ResilienceInfo(
-                attempt=trace.attempts if trace else 1,
-                retry=trace.retries if trace else 0,
-                fallback=trace.fallback if trace else False,
-                disposition=trace.disposition if trace else "",
+                attempt=attempt,
+                retry=retry,
+                fallback=bool(degraded_from) or disposition in {"degrade", "retry"},
+                disposition=disposition,
+                attempt_index=attempt_index,
+                degraded_from=degraded_from,
             ),
             finish_reason=message.raw_stop_reason or message.stop_reason,
             terminal=message.terminal_state(),
+            output_valid=_output_validity(task, message),
             error_code=_error_code_from(message),
             error_message=message.error_message,
             stream_chunk_count=chunk_count,
         )
         await self.storage.save_call(record)
+
+
+def _output_validity(task: Task, message: AssistantMessage) -> bool | None:
+    """本次输出是否兑现了请求里的结构化约束。
+
+    失败/取消的调用压根没有可判的输出，记 ``None``——把"没跑成"记成"输出不合格"会让
+    ``output_valid`` 这个维度同时混进两类完全不同的故障。
+    """
+    if message.terminal_state() != "done":
+        return None
+    return output_validity(task.input, message.text())
 
 
 def _event_code(event: AssistantEvent) -> ErrorCode:
@@ -442,6 +585,11 @@ def _event_code(event: AssistantEvent) -> ErrorCode:
     if isinstance(event, ErrorEvent):
         return _error_code_from(event.error)
     return ErrorCode.UNKNOWN
+
+
+def _error_message(error: str) -> AssistantMessage:
+    """造一条 ``"<CODE>: <detail>"`` 形态的错误终态，供落库兜底用。"""
+    return AssistantMessage(stop_reason="error", error_message=error)
 
 
 def _error_code_from(message: AssistantMessage) -> ErrorCode | None:
@@ -598,11 +746,17 @@ async def _record_rejected(
     endpoint: str,
     exc: HTTPException,
 ) -> None:
-    """把被两层校验挡下的通讯也记进 exchanges（需求 Harness 层功能第 3 条）。
+    """把被网关入口挡下的通讯也记进 exchanges（需求 Harness 层功能第 3 条）。
 
-    这一类通讯**一次模型调用都没有**，``requests`` 表里没有对应行；但 agent 最常踩的
-    恰恰是 schema 错误，"这次我到底发了什么"只有在通讯日志里才看得到，所以不能因为
-    "没进路由"就不记。归组用的 ``task_id`` 由 :func:`_task_id_hint` 从原文里抠。
+    被挡下的有两类，都值得留痕：
+
+    * **两层校验失败**（400 / 422）——这一类通讯**一次模型调用都没有**，``requests``
+      表里没有对应行；但 agent 最常踩的恰恰是 schema 错误，"这次我到底发了什么"只有
+      在通讯日志里才看得到，所以不能因为"没进路由"就不记。
+    * **入口限流**（429）——调用方需要从日志里看出"是被网关限流挡下的，不是上游挂了"，
+      否则会一直以为是供应商的问题。
+
+    归组用的 ``task_id`` 由 :func:`_task_id_hint` 从原文里抠。
 
     落库失败不能改变对外行为——错误响应必须照常返回，因此这里的异常一律吞掉。
     """
@@ -622,6 +776,64 @@ async def _record_rejected(
             error_code=code,
             error_message=f"{code}: {message}" if message else code,
         )
+
+
+async def _guard_rate_limit(
+    service: GatewayService,
+    *,
+    request: Request,
+    raw: bytes,
+    task: Task,
+    endpoint: str,
+) -> None:
+    """入口限流：超限就地返回 **429 + ``Retry-After``**。
+
+    刻意**不**把它做成可重试的上游错误：重试只会让桶更空，而且会把"还要等多久"这个
+    信息从调用方手里拿走。因此这次请求根本不会进入路由执行，调用方拿到的就是一个
+    明确的 429 与他该等的秒数。
+    """
+    decision = service.check_rate_limit(task)
+    if decision is None or decision.allowed:
+        return
+    seconds = decision.retry_after_seconds()
+    exc = HTTPException(
+        status_code=429,
+        detail={
+            "code": ErrorCode.RATE_LIMITED.value,
+            "message": (
+                f"模型 {decision.model} 已触达本地限流（{decision.rpm:g} RPM），"
+                f"请在 {seconds} 秒后重试"
+            ),
+        },
+        headers={"Retry-After": str(seconds)},
+    )
+    await _record_rejected(service, request=request, raw=raw, endpoint=endpoint, exc=exc)
+    raise exc
+
+
+async def _resolve_prompt(
+    service: GatewayService,
+    *,
+    request: Request,
+    raw: bytes,
+    task: Task,
+    endpoint: str,
+) -> Task:
+    """把模板引用解析成实际请求；模板不存在或变量对不上 → **422**。
+
+    引用一个不存在的模板、或漏给变量，都属于"请求本身不合法"（422）而不是上游故障，
+    所以要在**限流之前**判：先给一个本就该 422 的请求回 429，调用方会误以为"等一会
+    再发同样的请求就能成功"。解析产物（补齐 version 的 task）交给后续执行路径。
+    """
+    try:
+        return await service.resolve_prompt(task)
+    except PromptTemplateError as exc:
+        http_exc = HTTPException(
+            status_code=422,
+            detail={"code": ErrorCode.PROMPT_INVALID.value, "message": str(exc)},
+        )
+        await _record_rejected(service, request=request, raw=raw, endpoint=endpoint, exc=http_exc)
+        raise http_exc
 
 
 def agent_router(service: GatewayService) -> APIRouter:
@@ -646,6 +858,12 @@ def agent_router(service: GatewayService) -> APIRouter:
         except HTTPException as exc:
             await _record_rejected(service, request=request, raw=raw, endpoint="/v1/tasks", exc=exc)
             raise
+        task = await _resolve_prompt(
+            service, request=request, raw=raw, task=task, endpoint="/v1/tasks"
+        )
+        await _guard_rate_limit(
+            service, request=request, raw=raw, task=task, endpoint="/v1/tasks"
+        )
         started = service.clock.now()
         message = await service.complete(task, trace_id=request.headers.get("x-trace-id"))
         body = {
@@ -654,6 +872,9 @@ def agent_router(service: GatewayService) -> APIRouter:
             "terminal": message.terminal_state(),
             "text": message.text(),
             "error_message": message.error_message,
+            # 结构化输出的兑现结果（与落库的同源）：调用方要的 JSON 到底合不合格，
+            # 不必再自己解析一遍就能看到。
+            "output_valid": _output_validity(task, message),
             # 不阻塞但需知会的告警，例如"认证失败已换模型继续"。
             "warnings": service.last_warnings,
             "usage": {
@@ -687,6 +908,14 @@ def agent_router(service: GatewayService) -> APIRouter:
         except HTTPException as exc:
             await _record_rejected(service, request=request, raw=raw, endpoint="/v1/tasks:stream", exc=exc)
             raise
+        # 限流必须在**建流之前**判：StreamingResponse 一旦返回，HTTP 状态码就固定成
+        # 200 了，再想表达 429 只能靠流里的 error 事件，那不是"返回 429"。
+        task = await _resolve_prompt(
+            service, request=request, raw=raw, task=task, endpoint="/v1/tasks:stream"
+        )
+        await _guard_rate_limit(
+            service, request=request, raw=raw, task=task, endpoint="/v1/tasks:stream"
+        )
         return StreamingResponse(
             service.stream_sse(
                 task,

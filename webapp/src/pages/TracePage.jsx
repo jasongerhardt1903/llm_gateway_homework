@@ -23,6 +23,10 @@ import { Input } from "../components/ui/field.jsx";
  * 前两种视图点开某条都按 trace_id 拉取整条链路，按需求中的 8 个维度
  * （关联 / Prompt / 路由 / 用量 / 延迟 / 弹性 / 结果 / 错误 / 成本）分组渲染，
  * 而不是把 JSON 原样倾倒。
+ *
+ * 链路视图额外回答"降级有没有生效"：候选链上的**每次尝试各一条记录**，用
+ * attempt_index 标位次、degraded_from 标降级来源，顶部再给一句"走了哪几个模型、
+ * 次数、降了几次"的摘要。列表与瀑布图同样标出位次，失败与重试不再隐形。
  */
 export default function TracePage() {
   const [keyword, setKeyword] = useState("");
@@ -87,7 +91,9 @@ export default function TracePage() {
   const openTrace = async (traceId) => {
     try {
       const payload = await getTrace(traceId);
-      setChain(payload.calls);
+      // 一次请求在候选链上可能试了多次，落库是好几条记录；按 attempt_index 排序，
+      // 不依赖时间戳——同一毫秒内的多条记录用时间排序会打平、顺序不稳。
+      setChain([...(payload.calls ?? [])].sort((a, b) => attempt_index(a) - attempt_index(b)));
       setSelected(traceId);
       setError("");
     } catch (err) {
@@ -115,6 +121,12 @@ export default function TracePage() {
       accessorKey: "model",
       header: "模型",
       cell: ({ getValue }) => getValue() || <span className="text-faint">—</span>,
+    },
+    {
+      id: "attempt",
+      header: "尝试",
+      accessorFn: (row) => attempt_index(row),
+      cell: ({ row }) => <AttemptBadge call={row.original} />,
     },
     {
       accessorKey: "terminal",
@@ -262,9 +274,10 @@ export default function TracePage() {
 
       {chain && (
         <Card className="mt-4">
-          <h3 className="mb-3 text-sm font-semibold text-fg">
+          <h3 className="mb-1 text-sm font-semibold text-fg">
             链路 <span className="font-mono text-xs text-muted">{selected}</span>
           </h3>
+          <ChainSummary chain={chain} />
           {chain.map((call) => (
             <TraceDetail key={call.call_id} call={call} />
           ))}
@@ -320,6 +333,7 @@ export function TaskWaterfall({ rows, selected, onSelect }) {
                   <span className="waterfall-label">
                     <Badge tone={terminal_class(call.terminal)}>{call.terminal}</Badge>
                     <span className="font-mono text-xs">{call.model || "—"}</span>
+                    <AttemptBadge call={call} />
                   </span>
                   <span className="waterfall-track">
                     <span
@@ -338,6 +352,91 @@ export function TaskWaterfall({ rows, selected, onSelect }) {
           </section>
         );
       })}
+    </div>
+  );
+}
+
+/* ==========================================================================
+   候选链 / 降级（"降级到底有没有生效"必须一眼看得出来）
+   --------------------------------------------------------------------------
+   一次请求在候选链上可能试了很多个模型，落库时**每次尝试各一条记录**、共享 trace_id，
+   用 attempt_index 标位次、degraded_from 标降级来源。下面这三个小工具把这套数据
+   压成"第几次 / 从谁降下来 / 整条链走了哪些模型"。
+   ========================================================================== */
+
+/** 本条记录在候选链里的位次（1 起）；旧记录没有该字段时视为首跳。 */
+export const attempt_index = (call) => Number(call?.attempt_index ?? 1);
+
+/** 本条记录是否由降级而来（即前面有模型失败过）。 */
+export const is_degraded = (call) => Boolean(call?.degraded_from);
+
+/**
+ * 把一条链路的若干条记录压成一句摘要。
+ *
+ * 决策快照（reason / candidates / rejected）在每条记录上都有并且完全相同，取第一条
+ * 有快照的即可——按 trace_id 查出来的链路一定来自同一次路由决策。
+ */
+export function attempt_summary(chain) {
+  const ordered = [...chain].sort((a, b) => attempt_index(a) - attempt_index(b));
+  const route = ordered.find((call) => call.route?.candidates?.length)?.route ?? {};
+  return {
+    total: ordered.length,
+    degraded: ordered.filter(is_degraded).length,
+    path: ordered.map((call) => call.model || "—"),
+    reason: route.reason ?? "",
+    candidates: route.candidates ?? [],
+    rejected: route.rejected ?? [],
+  };
+}
+
+/** 位次 + 降级来源徽标：是首跳就只显示一个浅色的「首次」。 */
+function AttemptBadge({ call }) {
+  const index = attempt_index(call);
+  if (index <= 1 && !is_degraded(call)) {
+    return <span className="text-faint">首次</span>;
+  }
+  return (
+    <span className="flex items-center gap-1">
+      <Badge tone="accent">#{index}</Badge>
+      {is_degraded(call) && (
+        <span title={`由 ${call.degraded_from} 降级而来`} className="inline-flex">
+          <Badge tone="warn">降级</Badge>
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** 链路头部：几次尝试、降了多少次、实际走过的模型顺序，以及路由决策的依据。 */
+function ChainSummary({ chain }) {
+  const summary = attempt_summary(chain);
+  return (
+    <div className="mb-3 rounded-md border border-border-soft bg-raised px-3 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-1.5 text-muted">
+        <span>共 {summary.total} 次尝试</span>
+        {summary.degraded > 0 && <Badge tone="warn">降级 {summary.degraded} 次</Badge>}
+        <span className="font-mono text-fg2">{summary.path.join(" → ")}</span>
+      </div>
+      {summary.reason && (
+        <div className="mt-1 text-muted">
+          路由依据：<span className="text-fg2">{summary.reason}</span>
+        </div>
+      )}
+      {summary.candidates.length > summary.total && (
+        <div className="mt-1 text-muted">
+          候选池（按序）：
+          <span className="font-mono text-fg2">{summary.candidates.join(" → ")}</span>
+        </div>
+      )}
+      {summary.rejected.length > 0 && (
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {summary.rejected.map((item) => (
+            <li key={item.model} className="text-muted">
+              未选 <span className="font-mono text-fg2">{item.model}</span>：{item.reason}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -393,6 +492,12 @@ function TraceDetail({ call }) {
         供应商: call.provider,
         实际模型: call.model,
         协议: call.api,
+        // 决策快照：落库后仍能回答"为什么选它 / 为什么不选它"。
+        决策: call.route?.reason,
+        候选链: (call.route?.candidates ?? []).join(" → "),
+        被拒: (call.route?.rejected ?? [])
+          .map((item) => `${item.model}（${item.reason}）`)
+          .join("；"),
       },
     ],
     [
@@ -419,6 +524,9 @@ function TraceDetail({ call }) {
     [
       "弹性",
       {
+        // 位次与降级来源是"逐次尝试"的坐标：同 trace_id 的几条记录靠它排序与串接。
+        位次: `#${call.attempt_index ?? 1}`,
+        降级来源: call.degraded_from,
         attempt: call.attempt,
         retry: call.retry,
         fallback: call.fallback,

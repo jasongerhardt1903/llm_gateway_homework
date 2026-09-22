@@ -8,7 +8,8 @@
 * 对 ``requests`` 按时间窗聚合即 Metrics（QPS / p99 / 错误率）。
 
 另有 ``cost_ledger``（成本账本，独立成表以便按账期结算）、``model_health``
-（模型健康，供路由动态选择）与 ``exchanges``（与后端 agent 的原始往来报文）。
+（模型健康，供路由动态选择）、``exchanges``（与后端 agent 的原始往来报文）与
+``prompts``（提示词模板，按 ``(name, version)`` 唯一——需求"提示词版本管理"的存储层）。
 
 ``exchanges`` 与 ``requests`` 刻意分开：前者是**通讯层**事实（agent 发来什么字节、
 网关回了什么字节），后者是**调用层**事实（翻译后的请求落到哪个模型、花了多少钱）。
@@ -19,11 +20,12 @@
 时间来自注入的 ``now`` 函数，因此窗口类指标可以被测试精确驱动，
 不需要真实等待。
 
-版本：0.8.5
+版本：0.8.8
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 import uuid
@@ -34,6 +36,7 @@ import aiosqlite
 
 from ..core.errors import redact_mapping, redact_text
 from ..core.telemetry import CallRecord
+from .prompts import PromptTemplate
 
 __all__ = ["Storage"]
 
@@ -122,6 +125,16 @@ CREATE TABLE IF NOT EXISTS config (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS prompts (
+    name        TEXT NOT NULL,
+    version     TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    variables   TEXT NOT NULL DEFAULT '[]',
+    created_at  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (name, version)
+);
+CREATE INDEX IF NOT EXISTS idx_prompts_name ON prompts(name);
 
 CREATE TABLE IF NOT EXISTS exchanges (
     exchange_id   TEXT PRIMARY KEY,
@@ -618,6 +631,76 @@ class Storage:
         if row is None:
             return default
         return json.loads(row["value"])
+
+    # -- 提示词模板（需求"提示词版本管理"：模板存储 / 变量替换 / 版本引用） -----
+
+    async def save_prompt(self, template: PromptTemplate) -> PromptTemplate:
+        """写入一个模板版本；同一个 ``(name, version)`` 重复写入即覆盖。
+
+        覆盖而不是报冲突：模板是配置，运维改错一个字再存一次是常态，
+        逼着人先删再建只会让人放弃改。
+
+        返回**落库后**的模板（补上生效的 ``created_at``）：调用方拿到的
+        ``created_at`` 若恒为 0，界面就没法如实显示"这一版是什么时候存的"。
+        """
+        db = self._conn()
+        created_at = template.created_at or self._now()
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO prompts (name, version, body, variables, created_at)
+            VALUES (?,?,?,?,?)
+            """,
+            (
+                template.name,
+                template.version,
+                template.body,
+                json.dumps(template.variables, ensure_ascii=False),
+                created_at,
+            ),
+        )
+        await db.commit()
+        return dataclasses.replace(template, created_at=created_at)
+
+    async def prompt(self, name: str, version: str | None = None) -> PromptTemplate | None:
+        """取一个模板版本；``version`` 为空取该 name 的最新版本（按创建时间）。
+
+        "最新"用创建时间而不是版本号字符串比较——``v10`` 按字典序小于 ``v9``，
+        那种排序在这里只会制造惊喜。
+        """
+        db = self._conn()
+        if version:
+            cursor = await db.execute(
+                "SELECT * FROM prompts WHERE name = ? AND version = ?", (name, version)
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM prompts WHERE name = ? ORDER BY created_at DESC, version DESC LIMIT 1",
+                (name,),
+            )
+        row = await cursor.fetchone()
+        return None if row is None else PromptTemplate.from_row(row)
+
+    async def prompt_versions(self, name: str) -> list[PromptTemplate]:
+        """某个 name 的全部版本，新的在前。"""
+        db = self._conn()
+        cursor = await db.execute(
+            "SELECT * FROM prompts WHERE name = ? ORDER BY created_at DESC, version DESC", (name,)
+        )
+        return [PromptTemplate.from_row(row) for row in await cursor.fetchall()]
+
+    async def list_prompts(self) -> list[PromptTemplate]:
+        """全部模板版本，name 升序、版本新的在前。"""
+        db = self._conn()
+        cursor = await db.execute(
+            "SELECT * FROM prompts ORDER BY name ASC, created_at DESC, version DESC"
+        )
+        return [PromptTemplate.from_row(row) for row in await cursor.fetchall()]
+
+    async def delete_prompt(self, name: str, version: str) -> bool:
+        db = self._conn()
+        cursor = await db.execute("DELETE FROM prompts WHERE name = ? AND version = ?", (name, version))
+        await db.commit()
+        return cursor.rowcount > 0
 
 
 def _exchange_row(row: aiosqlite.Row) -> dict[str, Any]:

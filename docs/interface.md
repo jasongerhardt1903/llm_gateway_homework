@@ -8,6 +8,7 @@ agent 与网关之间的唯一请求形态。定义在 `core/schema.py`，两层
 {
   "task_id": "req-2026-0919-0001",     // 必填，调用方自带，便于幂等与链路追踪
   "profile": "default",                // 可选，gwprofile 名；为空时走 default profile
+  "model": "openai/gpt-4o-mini",       // 可选，点名模型（provider/id，或唯一匹配的裸 id）
   "input": {
     "messages": [                      // 必填，至少 1 条
       { "role": "user", "content": "你好" }
@@ -17,13 +18,84 @@ agent 与网关之间的唯一请求形态。定义在 `core/schema.py`，两层
       { "name": "get_weather", "description": "查天气", "parameters": {"type": "object", "properties": {}} }
     ],
     "response_schema": { "type": "object", "properties": { "answer": { "type": "string" } } },  // 可选，结构化输出
+    "response_format": { "type": "json_object" },  // 可选，response_schema 的 OpenAI 写法别名（0.8.6 新增）
     "max_tokens": 512,                 // 可选
     "temperature": 0.7,                // 可选，必须 ∈ [0, 2]
     "stream": true                     // 默认 true —— adapter 层默认用 SSE 与 LLM 通讯
   },
+  "prompt": {                          // 可选，提示词模板引用（0.8.6 新增）
+    "name": "summarize",
+    "version": "v2",                   // 省略 = 取该 name 的最新版本
+    "variables": { "article": "……" }   // 替换模板里的 {{article}}
+  },
   "metadata": { "run_id": "run-1", "step_id": "step-2", "prompt_name": "summarize" }
 }
 ```
+
+### 路由：`profile` 与 `model`
+
+两个字段分工是「**profile 定池子、model 定点名**」：
+
+| 字段 | 作用 | 缺省 |
+|---|---|---|
+| `profile` | 圈定候选池：只有该 profile 声明的模型参与路由 | 走 `default` profile；一个 profile 都没配时用全局模型池 |
+| `model` | 在候选池内**点名**一个模型（`provider/id`，或唯一匹配的裸 `id`） | 不点名，按 profile 的顺序/动态打分选主备 |
+
+点名只**改顺序**，不缩小候选池：被点名的模型排第一，其余候选仍作备用。因此点名的同时
+「按候选链降级」的能力依然保留。写全 `provider/id` 最稳妥；裸 `id` 仅在**唯一匹配**时认，
+两个供应商有同名模型时会如实报 `ROUTE_NO_CANDIDATE`，逼调用方写全标签。
+
+候选链**不止主备两个**：profile 里配了几个模型，降级时就能依次往下试几个（0.8.8 之前
+只试前两名，profile 里第 3、第 4 个模型永远不会被用到）。路由把这些模型排成一条有序链，
+主路由（`primary`）与备用（`backup`）只是它的前两名。
+
+点名不在 profile 池子里的模型（含不存在、能力不匹配、不可用）属于配置错误，**如实报**
+`ROUTE_NO_CANDIDATE`，而不会绕过 profile 悄悄用它——否则 profile 的多环境隔离就被架空了。
+
+### 结构化输出：`response_schema` 与 `response_format`
+
+两种写法等价，**不能同时给出**（歧义 → 422），全链路统一归一化到 `input.response_schema`：
+
+| 写法 | 含义 | `response_mode()` |
+|---|---|---|
+| `response_schema: {...}` | 直接给 JSON Schema | `json_schema` |
+| `response_format: {"type": "json_schema", "json_schema": {"schema": {...}}}` | OpenAI 的 json_schema 模式 | `json_schema` |
+| `response_format: {"type": "json_object"}` | 只要求"返回合法 JSON"，无结构约束 | `json_object` |
+| `response_format: {"type": "text"}` | 显式关闭结构化输出 | `none` |
+
+`json_object` **不会**被落成一个空壳 schema：那会让 `required_capabilities().json_schema`
+置真，把只支持 json_object 的供应商挡在路由之外。OpenAI 协议透传
+`response_format: {"type": "json_object"}`；Anthropic 协议没有对应字段，改为往 system
+里追加一句"只回一个合法 JSON 值"。
+
+#### 兑现情况：`output_valid`
+
+请求了结构化输出不等于上游真的照办，因此每次调用都会判定**输出是否兑现约束**，写进
+`CallRecord.output_valid` 并在 `/v1/tasks` 响应体里回给调用方。它是三分语义，不是布尔：
+
+| 取值 | 含义 |
+|---|---|
+| `None` | **没有可判定的输出**：未请求结构化输出，或调用失败/被取消 |
+| `True` | 兑现了：正文是合法 JSON（`json_object`），或与 schema 结构对齐（`json_schema`） |
+| `False` | 请求了但没兑现：调用成功（`terminal=done`）却回了不合法 JSON / 不合结构的正文 |
+
+`json_schema` 的判定覆盖 `type` / `enum` / `required` / `properties` / `items` 五个关键字
+（刻意不引入 `jsonschema` 依赖）。`integer` 与 `number` 会排除 `bool`——Python 里 `bool`
+是 `int` 的子类，不排除的话 `true` 会被误判成合法整数。
+
+### 提示词模板引用：`prompt`
+
+模板存在 SQLite 的 `prompts` 表，键为 `(name, version)`；正文里用 `{{变量名}}` 占位。
+请求带上 `prompt` 后，网关在**执行前**把模板渲染进 `input.system`（模板在前，调用方
+自己的 `system` 在后，各占一段）。
+
+| 情况 | 结果 |
+|---|---|
+| `version` 省略 | 取该 name 的最新版本；解析出的确切版本会写进调用记录 |
+| 模板不存在 | 422 `PROMPT_INVALID` |
+| 缺变量 / 多给变量 | 422 `PROMPT_INVALID`（变量名拼错是模板最常见的故障，静默忽略只会让模型收到带空洞的 prompt） |
+
+模板的增删查走控制台 `/api/prompts*`（见第 4 节）。
 
 ### 消息
 
@@ -123,6 +195,22 @@ curl -X POST http://127.0.0.1:8000/v1/tasks \
 ### `POST /v1/tasks:stream` — 流式（默认）
 
 请求体同上。响应 `content-type: text/event-stream`。可选请求头 `x-trace-id` 指定链路 ID。
+
+### 入口限流（0.8.6 新增）
+
+按**模型**各自持一个令牌桶（`harness/ratelimit.py`），超限就是 **429 + `Retry-After`**：
+
+| 项 | 约定 |
+|---|---|
+| 粒度 | 模型标签（`provider/model_id`）——A 被限住不影响 B |
+| 算法 | 令牌桶（容量 = 突发上限，按 `rpm/60` 连续补充），不是固定窗口 |
+| 开关 | `LLM_GW_RATE_LIMIT_RPM`（`<=0` 或未设 = 不限额）、`LLM_GW_RATE_LIMIT_BURST`（缺省 = `ceil(rpm)`） |
+| 出口 | `429` + `detail.code = RATE_LIMITED` + 响应头 `Retry-After: <秒>` |
+| 时序 | 在**建流之前**判——`StreamingResponse` 一旦返回状态码就固定成 200，再想表达 429 只能往流里塞 error 事件，那不是"返回 429" |
+| 留痕 | 被限流挡下的通讯同样落一条 `exchanges`（`error_code = RATE_LIMITED`），否则调用方会误以为是上游挂了 |
+
+限流发生在**两层校验与模板解析之后**：一个本来就该 422 的请求，回它 429 会让调用方
+以为"等一会重发同样的请求就能成功"。
 
 ### `GET /health`
 
@@ -250,6 +338,10 @@ data: [DONE]
 | PUT | `/api/settings/agent-password` | 配置 agent 口令；空串/`null` 表示清除（0.8.4 新增） |
 | GET | `/api/exchanges?q=&task_id=&limit=` | 与后端 agent 的通讯原始日志；`task_id` 优先于 `q`（0.8.4 新增） |
 | GET | `/api/exchanges/{exchange_id}` | 单条通讯的原始往来报文（0.8.4 新增） |
+| GET | `/api/prompts` | 全部提示词模板版本，name 升序、版本新的在前（0.8.6 新增） |
+| POST | `/api/prompts` | 存一个模板版本；`variables` 由正文的 `{{占位符}}` 推导，同一个 `(name, version)` 再存即覆盖（0.8.6 新增） |
+| GET | `/api/prompts/{name}` | 某个 name 的全部版本；name 不存在则 404（0.8.6 新增） |
+| DELETE | `/api/prompts/{name}/{version}` | 删除一个模板版本（0.8.6 新增） |
 | POST | `/api/tasks:validate` | 用两层校验试跑一个原始 task（调试用） |
 
 模型清单与 gwprofile 通过 `Storage` 的 `config` 表持久化，进程重启后由 `restore_config()` 恢复。
@@ -458,20 +550,51 @@ data: [DONE]
   "trace_id": "chat-chat-0fcc9f54c857", "run_id": "", "step_id": "", "call_id": "call-f4676a1dced6",
   "prompt_name": "", "prompt_version": "", "prompt_sha256": "3f2a...", "prompt_schema_version": "",
   "profile": "", "provider": "openai", "model": "gpt-4o-mini", "api": "openai-completions",
+  "route": {
+    "reason": "命中 profile smart 的静态路由；候选链 openai/gpt-4o-mini → openai/gpt-4o",
+    "candidates": ["openai/gpt-4o-mini", "openai/gpt-4o"],
+    "rejected": [{ "model": "anthropic/claude-3-5-haiku-20241022", "reason": "能力不匹配：json_schema" }]
+  },
   "usage": { "input": 12, "output": 9, "cache_read": 0, "cache_write": 0, "reasoning": null, "total_tokens": 21 },
   "ttft_ms": 412.5, "generation_ms": 1103.2, "total_ms": 1515.7,
   "queue_ms": 0.0, "route_ms": 0.0, "latency": { /* 同上，嵌套一份 */ },
   "attempt": 1, "retry": 0, "fallback": false, "timeout_budget_ms": 0,
+  "disposition": "", "attempt_index": 1, "degraded_from": "",
   "finish_reason": "stop", "terminal": "done", "output_valid": null,
   "error_code": null, "error_message": null, "http_status": null, "provider_request_id": null,
   "cost": { "input": 0.0000018, "output": 0.0000054, "cache_read": 0.0, "cache_write": 0.0, "total": 0.0000072 },
   "stream_chunk_count": 18,
   "metadata": {},
-  "ts": 1789754037.43
+  "ts": 1789754037.4
 }
 ```
 
 `ts` 是落库时间（秒，UTC 浮点），冗余进 payload 以便 Trace 页直接展示"请求时间"。
+`output_valid` 为 `true` / `false` / `null` 三分（语义见 §1「兑现情况」）——上面这条
+未请求结构化输出，故为 `null`。`latency` 与 `usage` / `cost` 一样是嵌套副本，
+扁平键（`ttft_ms` / `total_ms` 等）供前端直接取用。
+
+#### 一次尝试一条记录（0.8.8 新增）
+
+候选链上**每次尝试各落一条记录**：一次请求试了 N 个模型，`GET /api/traces/{trace_id}`
+就返回 N 条。这样"降级有没有生效、在哪一跳失败、重试了几次"才在 Trace 里看得见——
+只在最后落一条，失败与重试会整个消失。
+
+| 字段 | 含义 |
+| --- | --- |
+| `trace_id` | 同一次请求的 N 条记录**共享**同一个值，这就是"一条链路" |
+| `attempt_index` | 本条是候选链上的第几次尝试（1 起）；前端按它排序（同毫秒内按时间排序会打平） |
+| `degraded_from` | 本次尝试由哪个模型降级而来（`provider/id`，如 `openai/gpt-4o-mini`）；首跳为空串 |
+| `disposition` | 本条的错误处置：`retry`（同模型重试）/ `degrade`（换模型）/ `fail`（直接报错）；成功为空串 |
+| `fallback` | 本次尝试是否与降级有关：`degraded_from` 非空，或处置是 `retry` / `degrade` |
+| `route` | 路由决策快照，同一条链的每条记录都带同一份：`reason`（依据）、`candidates`（**整条**候选链）、`rejected`（被拒模型与原因） |
+
+`attempt` / `retry` 记的是**这一跳**对上游发起了几次调用（含同模型重试），不是整条请求
+的累计值——逐次落库后累计值会把同一条链上的数字重复相加。降级方向的终点（`degraded_to`）
+可以由下一条记录的 `degraded_from` 反推，因此不再单独落库。
+
+失败的那几条同样有记录：`terminal=error`、`error_code` 是稳定错误码（如 `AUTH_INVALID`），
+`model` 是**实际被试的那个模型**——修掉过"降级成功后记录的 `model` 却是主路由"这个问题。
 
 ---
 

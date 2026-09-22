@@ -14,10 +14,13 @@ import SettingsPage from "../pages/SettingsPage.jsx";
 import { ProfileForm, reorder } from "../pages/ProfilesPage.jsx";
 import {
   TaskWaterfall,
+  attempt_index,
+  attempt_summary,
   bar_geometry,
   classify_payload,
   group_by_task,
   group_exchanges,
+  is_degraded,
 } from "../pages/TracePage.jsx";
 import * as api from "../api.js";
 import { streamTask } from "../api.js";
@@ -304,6 +307,56 @@ describe("Trace 任务瀑布图", () => {
     expect(html).toContain("waterfall-bar waterfall-bad");
     expect(html).toContain("waterfall-bar waterfall-warn");
     expect(html).toContain("row-selected");
+  });
+
+  it("标出候选链上的位次与降级来源", () => {
+    // 首跳不加位次徽标，降级那条同时给出"#N"与"降级"。
+    expect(attempt_index({})).toBe(1);
+    expect(attempt_index({ attempt_index: 3 })).toBe(3);
+    expect(is_degraded({ degraded_from: "" })).toBe(false);
+    expect(is_degraded({ degraded_from: "openai/gpt-4o-mini" })).toBe(true);
+
+    const html = renderToStaticMarkup(
+      <TaskWaterfall
+        rows={[
+          { ...rows[0], attempt_index: 1 },
+          { ...rows[1], attempt_index: 2, degraded_from: "openai/gpt-4o-mini" },
+        ]}
+        selected=""
+        onSelect={() => {}}
+      />
+    );
+    expect(html).toContain("#2");
+    expect(html).toContain("降级");
+    expect(html).toContain('title="由 openai/gpt-4o-mini 降级而来"');
+  });
+
+  it("链路摘要给出尝试次数、模型顺序与路由决策快照", () => {
+    const route = {
+      reason: "命中 profile poc 的静态路由；主 a，备 b",
+      candidates: ["openai/a", "openai/b", "openai/c"],
+      rejected: [{ model: "openai/c", reason: "模型当前不可用" }],
+    };
+    const chain = [
+      { model: "a", route, attempt_index: 1, degraded_from: "" },
+      { model: "b", route, attempt_index: 2, degraded_from: "openai/a" },
+    ];
+
+    const summary = attempt_summary(chain);
+    expect(summary.total).toBe(2);
+    expect(summary.degraded).toBe(1); // 首跳不算降级
+    expect(summary.path).toEqual(["a", "b"]);
+    expect(summary.candidates).toHaveLength(3);
+    expect(summary.rejected[0].model).toBe("openai/c");
+
+    // 位次乱序入参也要按 attempt_index 归位。
+    expect(attempt_summary([...chain].reverse()).path).toEqual(["a", "b"]);
+  });
+
+  it("候选池比实际走过更长时才展示，避免重复一行", () => {
+    const route = { reason: "动态路由", candidates: ["openai/a"], rejected: [] };
+    const single = attempt_summary([{ model: "a", route, attempt_index: 1 }]);
+    expect(single.candidates.length).toBe(single.total); // 一致 → 不展示候选池
   });
 });
 

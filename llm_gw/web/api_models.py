@@ -33,6 +33,7 @@ __all__ = [
     "ProfileModelRefPayload",
     "ProfilePayload",
     "AgentPasswordPayload",
+    "PromptPayload",
     "model_to_payload",
     "model_to_stored_payload",
     "model_from_payload",
@@ -186,6 +187,21 @@ class AgentPasswordPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     password: str | None = None
+
+
+class PromptPayload(BaseModel):
+    """提示词模板的创建请求（需求"提示词版本管理"）。
+
+    ``variables`` **不由调用方提交**：它从 ``body`` 的 ``{{占位符}}`` 里抽出来，
+    谁引用这个模板都按同一份变量清单对齐。若允许提交，就可能出现"正文写 ``{{q}}``
+    而 variables 列填 ``question``"的两套事实。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    body: str = Field(min_length=1)
 
 
 def model_to_payload(model: Model) -> ModelPayload:

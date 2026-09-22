@@ -8,7 +8,12 @@
    顺序）；一个 profile 都没有时退回全局模型池，保证开箱即用。
 3. :func:`dynamic_select` —— 按能力注册表过滤（能力不匹配 / 不可用），
    未固定顺序时再按"消费比 → 单价"排序。
-4. :func:`build_primary_backup` —— 取前两名作为主、备。
+4. :func:`build_primary_backup` —— 取前两名作为主、备（``Decision.candidates``
+   则是**整条**候选链，降级时按它依次往下试，不止两个）。
+
+此外 task 还可以带 ``model`` 字段**点名**某个模型（需求第 27 行"根据请求中的 model
+字段动态路由"）：点名只把该模型提到首位，其余候选仍作备用，且不允许点名 profile 池子
+之外的模型。
 
 每次路由都产出 :class:`Decision`，其中 ``rejected`` 逐条记录被拒模型与原因——
 路由"为什么选它"和"为什么不选它"同样重要，否则线上问题无从排查。
@@ -165,7 +170,7 @@ def build_primary_backup(ordered: list[Model]) -> tuple[Model | None, Model | No
 
 
 def route(task: Task, registry: CapabilityRegistry) -> Decision:
-    """完整路由：解析 profile → 静态 → 动态 → 主备。"""
+    """完整路由：解析 profile → 静态 → 动态 → 主备 → ``model`` 点名。"""
     requested = task.profile
     profile = resolve_profile(task, registry)
 
@@ -175,14 +180,43 @@ def route(task: Task, registry: CapabilityRegistry) -> Decision:
 
     selection = apply_static(profile, registry)
     ordered, rejected = dynamic_select(selection, task, registry)
+
+    # 需求第 27 行："根据请求中的 model 字段动态路由到对应适配器"。
+    # 点名只**改顺序**，不扩大候选池：点了个池子外的模型，说明调用方对 profile 的理解
+    # 与配置不一致，如实报错比悄悄照办更有用。
+    pinned = task.model
+    if pinned:
+        target = registry.find(pinned)
+        if target is None:
+            return Decision(
+                profile=profile,
+                rejected=rejected,
+                reason=f"model {pinned} 不存在（请用 provider/id 形态或唯一的 id）",
+            )
+        if target not in ordered:
+            # 两种"不在池子里"要分清：被能力/可用性拒了（rejected 里有原因），还是压根
+            # 不在 profile 声明的范围内。后者与模型本身的好坏无关，说成"不可用"会误导。
+            why = next(
+                (reason for model, reason in rejected if model is target),
+                f"不在 profile {profile.name} 的候选池里" if profile else "不在候选池里",
+            )
+            return Decision(profile=profile, rejected=rejected, reason=f"model {pinned} 不可用：{why}")
+        ordered = [target, *(model for model in ordered if model is not target)]
+        selection.reason = f"{selection.reason}；model {pinned} 已点名"
+
     primary, backup = build_primary_backup(ordered)
 
     if primary is None:
         reason = "没有可用候选模型" if not rejected else "全部候选被拒"
-    elif backup is not None:
-        reason = f"{selection.reason}；主 {primary.label()}，备 {backup.label()}"
-    else:
+    elif backup is None:
         reason = f"{selection.reason}；主 {primary.label()}（无备用）"
+    elif len(ordered) > 2:
+        # 候选链可以不止两个模型——降级就是一路往下试。只报"主/备"会让 Trace 里
+        # 看不全"这次到底会依次试哪几个"，决策快照要把整条链说清楚。
+        chain = " → ".join(model.label() for model in ordered)
+        reason = f"{selection.reason}；候选链 {chain}"
+    else:
+        reason = f"{selection.reason}；主 {primary.label()}，备 {backup.label()}"
 
     return Decision(
         profile=profile,

@@ -2,6 +2,150 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.8.8
+
+修复「profile 里配了好几个模型，降级看起来没生效」这一组问题。**降级逻辑本身一直在
+跑**，坏在三处让人看不见、也走不远的地方：
+
+### 修复
+
+- **候选链不再封顶 2 个模型（`router/router.py`）**——此前每次尝试都只取
+  `[decision.primary, decision.backup]`，profile 里配第 3、第 4 个模型永远不会被试用，
+  "降级"实际只有一次机会。现在按 `Decision.candidates` **整条**候选链依次往下试，直到
+  有一个成功或整条链用尽。
+- **非流式降级后记录的模型写错（`harness/service.py`）**——`complete()` 落库时没把真正
+  出力的模型传下去，记录的 `model` 用的是决策的**主路由**，于是"降级成功"在 Trace 里显示
+  成"主路由成功"。现在按每次尝试的实际模型落库。
+- **`degraded_from` / `degraded_to` 从不落库**——此前只在流式路径的 `exchanges.meta`
+  里，非流式调用完全看不到降级发生。现在降级方向进调用记录。
+- **路由决策不可见**——调用记录新增 `route` 快照（依据 `reason` + 完整 `candidates` +
+  被拒模型 `rejected`），回答"为什么选它 / 为什么不选它"。候选链超过两个时 `reason`
+  直接列出整条链（`候选链 A → B → C → D`），不再只说"主/备"。
+
+### 新增
+
+- **每次尝试各落一条调用记录**：一次请求在候选链上试了几次，就落几条 `CallRecord`，
+  共享同一个 `trace_id`，用 `attempt_index`（1 起）标位次、`degraded_from`（`provider/id`）
+  标"从谁降级而来"、`fallback` 标这次尝试是否与降级有关。失败与重试不再隐形。
+  - 流式路径同样适用：首 delta 之前换模型时，**先落一条失败记录**再落最终那条。
+  - `attempt` / `retry` 的语义随之收窄为"**这一跳**对上游发起了几次调用"，不再是整条
+    请求的累计值——逐次落库后，累计值会把同一条链上的数字重复相加。
+- **Trace 页（`webapp/src/pages/TracePage.jsx`）**：链路按 `attempt_index` 排序（同一毫秒
+  内的多条记录按时间排序会打平）；列表与瀑布图标出位次徽标（首跳 / #N + 降级来源悬停
+  提示）；链路顶部给一句摘要——共几次尝试、降了几次、走过哪几个模型、路由依据、候选池
+  与被拒模型。
+
+### 测试
+
+- 新增 3 个后端用例（`test_router.py` 2 个：整条链依次试、`on_attempt` 回调；`test_service.py`
+  1 个：同 `trace_id` 的每次尝试都带路由快照），合计 **457 passed**、覆盖率 93%。
+- 两条既有用例按新语义改断言（降级后**两条**记录，按 `attempt_index` 取数，不依赖时间排序）。
+- 前端 `npm test` 30 → **33 passed**（smoke 25 → 28：位次徽标、链路摘要、候选池比实际
+  更长时才展示）。
+- `scripts/verify.py` 新增 §6c「候选链降级」：假上游支持**按路径恒失败**（`fail_paths`
+  + 可配 `fail_status`），把 OpenAI 那条路打成 401（`AUTH_INVALID`，处置 = 直接换模型），
+  验证 4 个模型依次都试、落 4 条记录、`degraded_from` 依次指向上一跳、最终记录的模型是
+  真正出力的 Anthropic 那个。断言总数 96 → **109 项**，全部通过。
+
+### 其他
+
+- 文档同步：`docs/interface.md` 补 `route` / `attempt_index` / `degraded_from` 与「一次尝试
+  一条记录」语义；`docs/test-evidence.md` §6.13 记录本次修复与数字。
+- 版本号 `0.8.7` → `0.8.8`。
+
+## 0.8.7
+
+补齐上一版如实记下的两个空档：**路由键**与 **`CallRecord.output_valid`**。
+
+### 新增
+
+- **按请求里的 `model` 字段点名路由（`core/schema.py` + `router/`）**——需求第 27 行要求
+  "根据请求中的 **model 字段**动态路由到对应适配器"，此前只能靠 `profile`（候选池）侧面
+  路由，直接发 `{"model": ...}` 会被 `extra="forbid"` 422 挡下。现补顶层字段 `model`：
+  - 分工定为「**profile 定池子、model 定点名**」：`profile` 仍是候选池的作用域，`model`
+    在池内把目标提到首位；
+  - 点名**只改顺序、不砍备用**：被点名的作主路由，其余候选仍作备用，主备降级能力不因
+    点名而消失；
+  - `CapabilityRegistry.find()` 同时接受 `provider/id` 与裸 `id`，裸 `id` 仅在**唯一匹配**
+    时认（两个供应商有同名模型时如实报 `ROUTE_NO_CANDIDATE`，逼调用方写全标签）；
+  - 点名 profile 池子外的模型**如实报错**，不会绕过 profile 悄悄使用——否则多环境隔离被架空。
+- **`CallRecord.output_valid` 接线（`core/schema.py::output_validity` + `harness/service.py`）**
+  ——此前 schema 与 `requests` 表都有该列却无人写入、恒为 `None`。现在每次调用结束判定输出
+  是否兑现请求里的结构化约束，写进调用记录并在 `/v1/tasks` 响应体回给调用方：
+  - 是**三分语义**：`None` = 未请求结构化输出或调用失败/取消（没有可判定的输出）；
+    `True` = 兑现；`False` = 请求了但没兑现（调用成功却回了不合法 JSON / 不合结构）；
+  - schema 判定覆盖 `type` / `enum` / `required` / `properties` / `items` 五个关键字，
+    刻意不引入 `jsonschema` 依赖；`integer` / `number` 显式排除 `bool`（Python 里 `bool`
+    是 `int` 子类，不排除会把 `true` 误判成合法整数）。
+
+### 测试
+
+- 新增 20 个后端用例（`test_schema.py` +9、`test_profile_routing.py` +6、`test_service.py` +5），
+  合计 **454 passed**。
+- `scripts/verify.py` 新增 §1b「按 model 字段路由」与 §3 的三条 `output_valid` 断言，
+  断言总数 84 → **96 项**，全部通过。
+
+### 其他
+
+- 文档同步：`docs/interface.md` 第 1 节补 `model` 字段与「profile 定池子 / model 定点名」
+  说明、结构化输出一节补 `output_valid` 三分语义；`docs/test-evidence.md` §6.11 数字更新并
+  新增 §6.12 记录这两处修复。
+- 版本号 `0.8.6` → `0.8.7`。
+
+## 0.8.6
+
+补齐验收清单里的三处缺口：`response_format` 别名、按模型独立限流、提示词版本管理。
+
+### 新增
+
+- **提示词模板（`llm_gw/harness/prompts.py` + `prompts` 表）**——需求"提示词版本管理"
+  要求"模板存储、变量替换和版本引用"，此前只有 `metadata` 里的自由文本，不构成版本管理。
+  - 模板以 `(name, version)` 为唯一键落在 SQLite（`storage.py` 建表 + 5 个方法）；
+  - 正文用 `{{变量名}}` 占位，变量清单在**写入时**从正文抽出存库，因此"这个模板需要哪些
+    变量"是可查的；缺变量与**多给变量都报错**——变量名拼错（`{{question}}` →
+    `{{qusetion}}`）是模板最常见的故障，静默忽略只会让模型收到带空洞的 prompt；
+  - task 里用 `prompt: {name, version, variables}` 引用；`version` 省略取最新版本，
+    解析出的**确切版本**写进调用记录（`CallRecord.prompt`）；
+  - 引用失败（模板不存在 / 变量对不上）返回 **422 `PROMPT_INVALID`**，并落一条
+    `exchanges` 通讯记录——它一次模型调用都没有，`requests` 表里查不到。
+- **按模型独立限流（`llm_gw/harness/ratelimit.py`）**——需求"韧性基础"要求"按模型独立
+  限流（超限返回 429）"。
+  - 令牌桶而非固定窗口：容量 = 突发上限，按 `rpm/60` 连续补充，没有窗口边界的尖峰；
+  - 桶按**模型标签**各自持有，A 被限住不影响 B；
+  - 超限即 `429` + `detail.code = RATE_LIMITED` + 响应头 `Retry-After: <秒>`
+    （秒数向上取整且不小于 1——给 0 等于让调用方立刻重发，等于没有退避）；
+  - 判定在**建流之前**：`StreamingResponse` 一旦返回状态码就固定成 200，再想表达 429
+    只能往流里塞 error 事件，那不是"返回 429"；
+  - 默认不限额（本地开发不该被绊住），由 `LLM_GW_RATE_LIMIT_RPM` /
+    `LLM_GW_RATE_LIMIT_BURST` 开启。
+- **`response_format` 别名（`core/schema.py`）**——验收口径按 OpenAI 的字段名发请求，
+  此前会被 422 挡下。现在与 `response_schema` 等价并归一化到后者（两者不能同时给）：
+  `json_schema` 抽出内部 schema，`json_object` 表示"只要合法 JSON、不限结构"，
+  `text` 显式关闭。`json_object` **刻意不落成空壳 schema**——那会让
+  `required_capabilities().json_schema` 置真，把只支持 json_object 的供应商挡在路由外。
+- **控制台 `/api/prompts*`**：`GET /api/prompts`（全部版本）、`POST /api/prompts`
+  （存一个版本，`variables` 由正文推导）、`GET /api/prompts/{name}`（该 name 的全部版本，
+  不存在则 404）、`DELETE /api/prompts/{name}/{version}`。
+- README 新增「API 用法（curl）」一节：流式、结构化输出、模板引用、可观测数据、重试、
+  限流、两个模型各一条可复制的命令。
+- **独立验证脚本 `scripts/verify.py`**——交付物要求"验证脚本覆盖全部功能点"。它自起一个
+  本地假上游（同一进程同时提供两套协议，按真实协议逐块回包并分两处上报 usage），再起
+  真正的网关进程指向它，然后用真实 HTTP 请求逐项验证六大功能点，共 **84 项断言**。
+  全靠假上游，因此**不需要任何真实密钥、可离线复现**；限流那一项要进程启动时固定环境
+  变量，故另起一个 `RPM=3` 的实例单独验。
+
+### 变更
+
+- 限流与模板解析的**顺序**：`两层校验 → 模板解析 → 限流`。给一个本来就该 422 的请求回
+  429，会让调用方以为"等一会重发同样的请求就能成功"。
+- `CallRecord.prompt` 优先读结构化的 `task.prompt`（`resolve_prompt` 已把缺省版本补成
+  实际版本），仅在调用方仍走 `metadata` 约定时回落。
+- 版本号 `0.8.5` → `0.8.6`（`llm_gw/__init__.py`、`pyproject.toml`、
+  `webapp/package.json`、`webapp/src/styles.css`、`README.md`、
+  `llm_gw/web/app.py`、`llm_gw/harness/service.py`、`llm_gw/harness/storage.py`）。
+- 文档同步：`docs/interface.md` 补 `response_format` / `prompt` 字段、入口限流一节与
+  `/api/prompts*` 契约。
+
 ## 0.8.5
 
 修一个把"密钥只写不回显"错误地延伸到持久化上的缺陷。

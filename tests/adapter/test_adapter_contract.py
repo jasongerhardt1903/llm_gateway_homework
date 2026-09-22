@@ -95,6 +95,43 @@ def test_deepseek_degrades_response_format_to_json_object(deepseek_model, make_a
     assert _body(request)["response_format"] == {"type": "json_object"}
 
 
+def test_openai_response_format_alias_json_object_is_forwarded(openai_model, make_adapter):
+    """OpenAI 形态的 response_format 别名 → json_object 原样透传给上游。"""
+    adapter = make_adapter(openai_model, sse_transport([]))
+    task = _task(response_format={"type": "json_object"})
+
+    body = _body(adapter.build_request(openai_model, task))
+
+    assert body["response_format"] == {"type": "json_object"}
+
+
+def test_openai_response_format_alias_json_schema_becomes_strict_schema(openai_model, make_adapter):
+    """别名里的 json_schema 归一化后，与直接用 response_schema 完全等价。"""
+    adapter = make_adapter(openai_model, sse_transport([]))
+    task = _task(
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": "weather", "schema": {"type": "object"}},
+        }
+    )
+
+    body = _body(adapter.build_request(openai_model, task))
+
+    assert body["response_format"]["type"] == "json_schema"
+    assert body["response_format"]["json_schema"]["schema"] == {"type": "object"}
+    assert body["response_format"]["json_schema"]["strict"] is True
+
+
+def test_deepseek_json_object_mode_is_not_downgraded(deepseek_model, make_adapter):
+    """json_object 模式本来就只要求合法 JSON，DeepSeek 无需"降级"即可满足。"""
+    adapter = make_adapter(deepseek_model, sse_transport([]))
+    task = _task(response_format={"type": "json_object"})
+
+    assert _body(adapter.build_request(deepseek_model, task))["response_format"] == {
+        "type": "json_object"
+    }
+
+
 def test_openai_translates_tool_history(openai_model, make_adapter):
     """assistant 的 tool_call 与 tool 结果必须翻译成协议要求的成对结构。"""
     adapter = make_adapter(openai_model, sse_transport([]))
@@ -298,6 +335,18 @@ def test_anthropic_structured_output_uses_prompt_instruction(anthropic_model, ma
     assert "response_format" not in body
     assert "JSON Schema" in body["system"]
     assert '"a"' in body["system"]
+
+
+def test_anthropic_json_object_mode_uses_json_only_instruction(anthropic_model, make_adapter):
+    """json_object 模式无 schema 可注入，只能要求"只回合法 JSON"。"""
+    adapter = make_adapter(anthropic_model, sse_transport([]))
+    task = _task(response_format={"type": "json_object"})
+
+    body = _body(adapter.build_request(anthropic_model, task))
+
+    assert "response_format" not in body
+    assert "valid JSON" in body["system"]
+    assert "JSON Schema" not in body["system"]
 
 
 def test_anthropic_parse_response(anthropic_model, make_adapter):

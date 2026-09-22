@@ -400,6 +400,60 @@ async def test_execute_retries_then_degrades_after_max_retries():
     assert trace.fallback is True
 
 
+async def test_execute_tries_the_whole_candidate_chain_in_order():
+    """候选链不止主备两名：profile 里配了 3 个就该试 3 个。
+
+    只试前两名的话，第三个模型起"降级"就名存实亡——用户在 profile 里配的 4 个模型
+    实际只有 2 次机会。
+    """
+    a, b, c = _model("a"), _model("b"), _model("c")
+    registry = _registry(a, b, c)
+    registry.set_profile(_static_profile("smart", ["openai/a", "openai/b", "openai/c"]))
+    auth = AssistantMessage(stop_reason="error", error_message="AUTH_INVALID: bad key")
+    adapters = {label: _FakeAdapter([auth]) for label in ("openai/a", "openai/b", "openai/c")}
+    trace = ExecutionTrace()
+
+    message = await _router_with(registry, adapters).execute(_task(profile="smart"), trace=trace)
+
+    assert message.stop_reason == "error"
+    assert adapters["openai/a"].calls == ["openai/a"]
+    assert adapters["openai/b"].calls == ["openai/b"]
+    assert adapters["openai/c"].calls == ["openai/c"]
+    assert trace.attempt_index == 3
+    assert trace.served_model is None  # 一个都没跑成，没有"served"可言
+    assert (trace.degraded_from, trace.degraded_to) == ("openai/b", "openai/c")
+
+    # 决策快照也要把整条链说全：只说"主/备"会让 Trace 里看不出会依次试哪几个。
+    decision = _router_with(registry, adapters).route(_task(profile="smart"))
+    assert decision.candidates == [a, b, c]
+    assert "openai/a → openai/b → openai/c" in decision.reason
+
+
+async def test_execute_reports_every_attempt_to_the_callback():
+    """``on_attempt`` 每次尝试回调一次，带上位次与降级来源，供调用方逐条落库。"""
+    a, b, c = _model("a"), _model("b"), _model("c")
+    registry = _registry(a, b, c)
+    registry.set_profile(_static_profile("smart", ["openai/a", "openai/b", "openai/c"]))
+    auth = AssistantMessage(stop_reason="error", error_message="AUTH_INVALID: bad key")
+    adapters = {
+        "openai/a": _FakeAdapter([auth]),
+        "openai/b": _FakeAdapter([auth]),
+        "openai/c": _FakeAdapter([AssistantMessage()]),
+    }
+    seen: list[tuple[int, str, str, bool]] = []
+
+    async def on_attempt(attempt) -> None:
+        seen.append((attempt.index, attempt.model.label(), attempt.degraded_from, attempt.final))
+
+    await _router_with(registry, adapters).execute(_task(profile="smart"), on_attempt=on_attempt)
+
+    assert seen == [
+        (1, "openai/a", "", False),
+        (2, "openai/b", "openai/a", False),
+        (3, "openai/c", "openai/b", True),
+    ]
+
+
 async def test_execute_returns_route_error_when_no_candidate():
     registry = _registry(_model("plain"))
     router = _router_with(registry, {})

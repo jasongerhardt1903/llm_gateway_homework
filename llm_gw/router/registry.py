@@ -63,6 +63,18 @@ class CapabilityRegistry:
                 return model
         return None
 
+    def find(self, ref: str) -> Model | None:
+        """按标签（``provider/id``）或裸 ``id`` 找模型，供 task 的 ``model`` 字段使用。
+
+        裸 ``id`` 只在**唯一匹配**时认：两个供应商有同名模型时返回 ``None``，逼调用方
+        写全标签——随手挑一个比报错更难排查。
+        """
+        by_label = self.get(ref)
+        if by_label is not None:
+            return by_label
+        matches = [model for model in self.models if model.id == ref]
+        return matches[0] if len(matches) == 1 else None
+
     def all_models(self) -> list[Model]:
         return list(self.models)
 

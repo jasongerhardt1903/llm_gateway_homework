@@ -36,6 +36,7 @@ from .adapter.base import AdapterOptions
 from .adapter.factory import create_adapter
 from .adapter.presets.registry import all_models, get_preset
 from .core.messages import Model
+from .harness.ratelimit import ModelRateLimiter, policy_from_env
 from .harness.retry import RetryPolicy
 from .harness.service import GatewayService, agent_router
 from .harness.storage import Storage
@@ -74,7 +75,9 @@ def create_runtime_app(*, db_path: str | None = None) -> FastAPI:
         ),
         retry_policy=RetryPolicy(),
     )
-    service = GatewayService(router, storage)
+    service = GatewayService(
+        router, storage, limiter=ModelRateLimiter(lambda _label: policy_from_env())
+    )
     # 控制台也要查上游（供应商模型清单、模型连接测试），因此把同一个连接池与
     # 同一套密钥解析策略注入进去，避免控制台另建一份、两处口径漂移。
     console = create_web_app(

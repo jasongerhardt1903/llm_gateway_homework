@@ -123,9 +123,44 @@ async def test_schema_violation_returns_422(openai_model):
     assert response.status_code == 422
 
 
-# --------------------------------------------------------------------------
-# SSE 流式与终态约定
-# --------------------------------------------------------------------------
+async def test_response_format_alias_is_accepted_by_interface(openai_model):
+    """验收口径按 OpenAI 的字段名发请求：response_format 不能再被 422 挡下。"""
+    service, _ = _build(openai_model, _json_transport(_completion_body("{}")))
+    payload = _task_payload(response_format={"type": "json_object"})
+    async with await _client(create_app(service)) as client:
+        response = await client.post("/v1/tasks", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["terminal"] == "done"
+
+
+async def test_response_format_json_schema_alias_reaches_upstream(openai_model):
+    """别名里的 json_schema 归一化后要真的落到上游请求体里。"""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json=_completion_body("{}"), headers={"content-type": "application/json"})
+
+    service, _ = _build(openai_model, httpx.MockTransport(handler))
+    payload = _task_payload(
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "schema": {"type": "object", "properties": {"answer": {"type": "string"}}},
+            },
+        }
+    )
+    async with await _client(create_app(service)) as client:
+        response = await client.post("/v1/tasks", json=payload)
+
+    assert response.status_code == 200
+    assert captured["response_format"]["type"] == "json_schema"
+    assert captured["response_format"]["json_schema"]["schema"] == {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+    }
 
 
 async def test_stream_emits_done_and_done_marker(openai_model):
@@ -254,6 +289,109 @@ def _validated_with_profile(name: str):
     return validate_schema({**_task_payload(), "profile": name})
 
 
+async def test_output_valid_is_recorded_for_structured_calls(openai_model):
+    """请求了结构化输出，就必须有"兑现了没有"的记录。
+
+    这个维度此前在 schema 与库表里都有列、却没有任何写入方（恒为 ``None``），
+    等于把"输出不合格"和"没要求"混成同一个值。
+    """
+    storage = await Storage(":memory:").init()
+    service, _ = _build(
+        openai_model,
+        _json_transport(_completion_body('{"city": "上海"}')),
+        storage=storage,
+    )
+
+    async with await _client(create_app(service)) as client:
+        response = await client.post(
+            "/v1/tasks",
+            json=_task_payload(response_format={"type": "json_object"}),
+        )
+
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert response.json()["output_valid"] is True
+    assert rows[0]["output_valid"] == 1
+
+
+async def test_output_invalid_is_recorded_when_upstream_returns_prose(openai_model):
+    """上游回了一段散文而不是 JSON：调用本身成功，但约束没兑现。"""
+    storage = await Storage(":memory:").init()
+    service, _ = _build(
+        openai_model,
+        _json_transport(_completion_body("上海今天晴。")),
+        storage=storage,
+    )
+
+    async with await _client(create_app(service)) as client:
+        response = await client.post(
+            "/v1/tasks",
+            json=_task_payload(response_format={"type": "json_object"}),
+        )
+
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert response.json()["terminal"] == "done"
+    assert response.json()["output_valid"] is False
+    assert rows[0]["output_valid"] == 0
+
+
+async def test_output_valid_is_null_when_no_structured_output_requested(openai_model):
+    """没要求结构化输出就记 ``None``：``False`` 会把这个维度变成两种故障的混合体。"""
+    storage = await Storage(":memory:").init()
+    service, _ = _build(openai_model, _json_transport(_completion_body("随便一段话")), storage=storage)
+
+    async with await _client(create_app(service)) as client:
+        response = await client.post("/v1/tasks", json=_task_payload())
+
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert response.json()["output_valid"] is None
+    assert rows[0]["output_valid"] is None
+
+
+async def test_output_valid_is_null_when_the_call_failed(openai_model):
+    """上游报错时压根没有可判的输出，不能记成"输出不合格"。"""
+    storage = await Storage(":memory:").init()
+    service, _ = _build(openai_model, _json_transport({"error": {}}, status=401), storage=storage)
+
+    async with await _client(create_app(service)) as client:
+        response = await client.post(
+            "/v1/tasks",
+            json=_task_payload(response_format={"type": "json_object"}),
+        )
+
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert response.json()["terminal"] == "error"
+    assert rows[0]["output_valid"] is None
+
+
+async def test_streaming_call_also_records_output_valid(openai_model):
+    """流式路径同样要判——它和非流式共用同一处落库，不能只接一半。"""
+    storage = await Storage(":memory:").init()
+    service, _ = _build(
+        openai_model,
+        sse_transport(openai_sse(text='{"city": "上海"}')),
+        storage=storage,
+    )
+
+    async for _ in service.stream_sse(
+        _validated(response_format={"type": "json_object"})
+    ):
+        pass
+
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert rows[0]["terminal"] == "done"
+    assert rows[0]["output_valid"] == 1
+
+
 async def test_ttft_is_measured_from_first_business_delta(openai_model):
     storage = await Storage(":memory:").init()
     clock = _StepClock()
@@ -356,10 +494,23 @@ async def test_auth_failure_degrades_and_records_resilience(openai_model):
 
     assert message.stop_reason != "error"
     assert message.text() == "你好"
-    assert rows[0]["attempt"] == 2
-    assert rows[0]["fallback"] == 1
-    assert rows[0]["disposition"] == "degrade"
-    assert rows[0]["error_code"] is None  # 最终成功，错误码不落库
+    # 每次尝试各落一条：先记下主模型的失败，再记下降级后成功的那条。
+    assert len(rows) == 2
+    failed, served = _by_attempt_index(rows)
+    assert failed["model"] == "gpt-4o-mini"
+    assert failed["terminal"] == "error"
+    assert failed["error_code"] == "AUTH_INVALID"  # 失败那次的原因也留痕
+    assert failed["disposition"] == "degrade"
+    assert failed["degraded_from"] == ""  # 首跳，不是被谁降下来的
+    assert failed["attempt"] == 1
+
+    assert served["model"] == "gpt-4o"
+    assert served["terminal"] == "done"
+    assert served["attempt"] == 1
+    assert served["fallback"] == 1
+    assert served["degraded_from"] == "openai/gpt-4o-mini"
+    assert served["disposition"] == ""
+    assert served["error_code"] is None  # 最终成功，错误码不落库
     assert any("AUTH_INVALID" in warning for warning in service.last_warnings)
 
 
@@ -421,11 +572,62 @@ async def test_stream_degrades_to_backup_before_first_delta(openai_model):
     assert "event: error" not in body  # 被放弃的流的终态不对外
     assert len(backup_calls) == 1  # 备用路由确实被调用
 
-    assert rows[0]["model"] == "gpt-4o"  # 落库的是真正服务本次请求的模型
-    assert rows[0]["attempt"] == 2
-    assert rows[0]["fallback"] == 1
-    assert rows[0]["disposition"] == "degrade"
-    assert rows[0]["terminal"] == "done"
+    # 被放弃的那条流同样要留痕，否则"降级有没有生效"在 Trace 里无从判断。
+    assert len(rows) == 2
+    failed, served = _by_attempt_index(rows)
+    assert failed["model"] == "gpt-4o-mini"
+    assert failed["terminal"] == "error"
+    assert failed["error_code"] == "AUTH_INVALID"
+    assert failed["disposition"] == "degrade"
+    assert failed["stream_chunk_count"] == 0  # 首 delta 前的帧没转发给客户端
+
+    assert served["model"] == "gpt-4o"  # 落库的是真正服务本次请求的模型
+    assert served["attempt"] == 1
+    assert served["fallback"] == 1
+    assert served["degraded_from"] == "openai/gpt-4o-mini"
+    assert served["disposition"] == ""
+    assert served["terminal"] == "done"
+    assert served["stream_chunk_count"] > 0
+
+
+# --------------------------------------------------------------------------
+# 路由决策快照与"一次尝试一条记录"
+# --------------------------------------------------------------------------
+
+
+def _by_attempt_index(rows: list[dict]) -> tuple[dict, dict]:
+    """按 ``attempt_index`` 取"第一条尝试"与"最后一条尝试"。
+
+    ``recent_calls`` 按 ts 排序，而测试时钟常常不推进（同一毫秒内多条记录），顺序
+    不稳定；位次字段才是权威顺序。
+    """
+    ordered = sorted(rows, key=lambda row: row["attempt_index"])
+    return ordered[0], ordered[-1]
+
+
+async def test_each_attempt_shares_trace_id_and_carries_route_snapshot(openai_model):
+    """"为什么选它 / 为什么不选它"必须随记录落库，同一次请求的各次尝试共享 trace_id。"""
+    primary = openai_model
+    backup = replace(openai_model, id="gpt-4o")
+    storage = await Storage(":memory:").init()
+    service = _two_model_service(
+        primary,
+        backup,
+        _json_transport({"error": {"message": "invalid api key"}}, status=401),
+        _json_transport(_completion_body("你好")),
+        storage,
+    )
+
+    await service.complete(_validated_with_profile("smart"), trace_id="trace-degrade")
+    rows = await storage.recent_calls()
+    await storage.close()
+
+    assert {row["trace_id"] for row in rows} == {"trace-degrade"}
+    assert [row["attempt_index"] for row in sorted(rows, key=lambda r: r["attempt_index"])] == [1, 2]
+    for row in rows:
+        assert row["route"]["candidates"] == ["openai/gpt-4o-mini", "openai/gpt-4o"]
+        assert "静态路由" in row["route"]["reason"]
+        assert row["route"]["rejected"] == []
 
 
 async def test_stream_does_not_degrade_after_first_delta(openai_model):

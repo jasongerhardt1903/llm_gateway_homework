@@ -758,3 +758,70 @@ async def test_validate_task_accepts_valid_payload(model, storage):
 
     assert response.status_code == 200
     assert response.json() == {"valid": True}
+
+
+# --------------------------------------------------------------------------
+# 提示词模板（需求"提示词版本管理"）
+# --------------------------------------------------------------------------
+
+
+async def test_create_prompt_derives_variables_from_body(model, storage):
+    """变量清单由正文推导，界面不必手工维护一份容易与正文脱节的清单。"""
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+    async with await _client(app) as client:
+        response = await client.post(
+            "/api/prompts",
+            json={"name": "qa", "version": "v1", "body": "你是 {{persona}}，回答 {{question}}。"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["variables"] == ["persona", "question"]
+    assert (await storage.prompt("qa", "v1")).body.startswith("你是 {{persona}}")
+
+
+async def test_list_prompts_and_versions(model, storage):
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+    async with await _client(app) as client:
+        await client.post("/api/prompts", json={"name": "qa", "version": "v1", "body": "一 {{q}}"})
+        await client.post("/api/prompts", json={"name": "qa", "version": "v2", "body": "二 {{q}}"})
+        listing = await client.get("/api/prompts")
+        versions = await client.get("/api/prompts/qa")
+
+    assert listing.status_code == 200
+    assert {item["version"] for item in listing.json()} == {"v1", "v2"}
+    assert [item["version"] for item in versions.json()["versions"]] == ["v2", "v1"]
+
+
+async def test_missing_prompt_name_returns_404(model, storage):
+    """不存在的 name 回 404 而不是空列表：空列表会让界面以为"模板建过但没版本"。"""
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+    async with await _client(app) as client:
+        response = await client.get("/api/prompts/nope")
+
+    assert response.status_code == 404
+
+
+async def test_delete_prompt_version(model, storage):
+    app, _, _ = _build(model, sse_transport(openai_sse()), storage)
+    async with await _client(app) as client:
+        await client.post("/api/prompts", json={"name": "qa", "version": "v1", "body": "一 {{q}}"})
+        deleted = await client.delete("/api/prompts/qa/v1")
+        again = await client.delete("/api/prompts/qa/v1")
+
+    assert deleted.json() == {"deleted": "qa@v1"}
+    assert again.status_code == 404
+
+
+async def test_prompts_require_storage(model):
+    """模板的价值就在于重启后还在，没库就没法成立，因此明确 503 而不是静默丢弃。"""
+    adapter = create_adapter(model.api, client_for(sse_transport(openai_sse()), base_url=model.base_url))
+    registry = CapabilityRegistry()
+    registry.register_all(all_models())
+    router = Router(registry, adapter_for=lambda _m: adapter, clock=FakeClock())
+    app = create_web_app(GatewayService(router, None, clock=FakeClock()), registry=registry)
+
+    async with await _client(app) as client:
+        response = await client.get("/api/prompts")
+
+    assert response.status_code == 503

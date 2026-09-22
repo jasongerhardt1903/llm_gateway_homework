@@ -90,6 +90,9 @@ class OpenAICompatAdapter(Adapter):
             body["tool_choice"] = "auto"
         if task.input.response_schema is not None:
             body["response_format"] = self._response_format(model, task.input.response_schema)
+        elif task.input.response_mode() == "json_object":
+            # 只要求"返回合法 JSON"、无结构约束：直接透传 OpenAI 的 json_object 模式。
+            body["response_format"] = {"type": "json_object"}
 
         body.update(options.extra_body)
 

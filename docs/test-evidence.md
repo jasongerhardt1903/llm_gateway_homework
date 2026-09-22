@@ -1,6 +1,30 @@
 # 测试证据
 
-> 本文件是 **v0.8.5** 的存档。v0.8.5 修一个缺陷：`_persist_models` 落库时复用了**对外**
+> 本文件是 **v0.8.8** 的存档。v0.8.8 修一组「profile 里配了好几个模型，降级看起来没生效」
+> 的问题：候选链此前**只试前两名**（profile 里第 3、第 4 个模型永远用不到）、非流式降级后
+> 记录的 `model` 写成主路由、`degraded_from` / `degraded_to` 从不落库、路由决策不可见。
+> 现在**每次尝试各落一条记录**（共享 `trace_id`，`attempt_index` 标位次、`degraded_from`
+> 标降级来源，并带路由决策快照 `route`）。后端用例由 454 增至 **457**（`test_router.py` +2、
+> `test_service.py` +1）；`scripts/verify.py` 由 96 项增至 **109 项**；前端 30 增至
+> **33 passed**；接口契约调用记录**新增** `route` / `attempt_index` / `degraded_from` /
+> `disposition` 四个字段，其余不变。详见第 6.13 节。
+>
+> 下面是 v0.8.7 的内容存档。v0.8.7 补齐上一版如实记下的两个空档：
+> **路由键**（请求顶层 `model` 字段，此前发 `{"model": ...}` 会被 422 挡下）与
+> **`CallRecord.output_valid`**（此前有列却无人写入、恒为 `None`）。后端用例由 434 增至
+> **454**（`test_schema.py` +9、`test_profile_routing.py` +6、`test_service.py` +5）；
+> `scripts/verify.py` 由 84 项增至 **96 项**；接口契约**新增** task 顶层字段 `model` 与
+> 响应/记录字段 `output_valid`，其余不变。详见第 6.12 节。
+>
+> 下面是 v0.8.6 的内容存档。v0.8.6 补齐验收清单的三处缺口：
+> **`response_format` 别名**（此前按 OpenAI 字段名发请求会被 422 挡下）、
+> **按模型独立限流**（令牌桶，超限 429 + `Retry-After`）、
+> **提示词版本管理**（`prompts` 表 + `{{变量}}` 渲染 + `prompt` 版本引用 + `/api/prompts*`）。
+> 后端用例由 390 增至 **434**（`test_prompts.py` +13、`test_ratelimit.py` +11、
+> `test_web_api.py` +5、`test_schema.py` +3）；接口契约**新增**两个 task 字段
+> （`input.response_format`、顶层 `prompt`）与四个控制台路由，其余不变。
+>
+> 下面是 v0.8.5 的内容存档。v0.8.5 修一个缺陷：`_persist_models` 落库时复用了**对外**
 > payload（`api_key` 恒为 `None`），每次保存模型都会把密钥抹掉，重启后模型全部变"未配置"。
 > 落库改走 `model_to_stored_payload()`，后端用例由 389 增至 **390**
 > （`test_web_api.py` +1），覆盖率 93%；前端 30 例不变，接口契约无变化。
@@ -52,12 +76,13 @@ $ .venv/bin/python -m pytest tests -p no:cacheprovider --cov=llm_gw --cov-report
 ```
 
 ```
-........................................................................ [ 18%]
-........................................................................ [ 37%]
-........................................................................ [ 55%]
-........................................................................ [ 74%]
-........................................................................ [ 93%]
-..........................                                               [100%]
+........................................................................ [ 15%]
+........................................................................ [ 31%]
+........................................................................ [ 47%]
+........................................................................ [ 63%]
+........................................................................ [ 79%]
+........................................................................ [ 95%]
+......................                                                   [100%]
 ================================ tests coverage ================================
 _______________ coverage: platform darwin, python 3.13.9-final-0 _______________
 
@@ -74,8 +99,8 @@ llm_gw/adapter/presets/deepseek.py                  10      0   100%
 llm_gw/adapter/presets/openai.py                     8      0   100%
 llm_gw/adapter/presets/registry.py                  39      2    95%   51, 65
 llm_gw/adapter/protocols/__init__.py                 0      0   100%
-llm_gw/adapter/protocols/anthropic_messages.py     181     20    89%   164, 175, 189-190, 192, 248-249, 256, 258-259, 295, 306, 319-325, 331
-llm_gw/adapter/protocols/openai_compat.py          169     12    93%   133-134, 159, 203-205, 211, 236-237, 289, 293-294
+llm_gw/adapter/protocols/anthropic_messages.py     184     20    89%   169, 180, 194-195, 197, 253-254, 261, 263-264, 300, 311, 324-330, 336
+llm_gw/adapter/protocols/openai_compat.py          171     12    93%   136-137, 162, 206-208, 214, 239-240, 292, 296-297
 llm_gw/adapter/structured.py                       134     25    81%   55-61, 128, 132, 135-137, 149, 151, 154, 164-165, 181-182, 232-233, 236, 239, 243, 268
 llm_gw/adapter/transform.py                         80      7    91%   81, 117-121, 136
 llm_gw/core/__init__.py                              0      0   100%
@@ -84,50 +109,58 @@ llm_gw/core/errors.py                              252     29    88%   209, 261-
 llm_gw/core/events.py                              155      6    96%   207, 244-245, 292, 302, 315
 llm_gw/core/json_utils.py                          191     14    93%   45, 141-142, 145, 184-185, 188, 197, 263-264, 267, 279, 289, 306
 llm_gw/core/messages.py                            124      1    99%   192
-llm_gw/core/schema.py                              115      6    95%   111, 142, 144, 175, 214-215
+llm_gw/core/schema.py                              194     10    95%   128, 184, 186, 260, 288, 299-301, 381-382
 llm_gw/core/telemetry.py                            57      0   100%
 llm_gw/harness/__init__.py                           0      0   100%
 llm_gw/harness/decisions.py                         14      1    93%   53
+llm_gw/harness/prompts.py                           50      2    96%   119-120
 llm_gw/harness/query.py                             20      0   100%
+llm_gw/harness/ratelimit.py                         75      3    96%   157-160
 llm_gw/harness/retry.py                            128     18    86%   98-99, 104-114, 136, 145, 147, 174, 207
-llm_gw/harness/service.py                          224      6    97%   113, 268, 439, 453-454, 486
+llm_gw/harness/service.py                          266      7    97%   132, 202, 333, 521, 535-536, 568
 llm_gw/harness/sse.py                               80      8    90%   97-103, 126
-llm_gw/harness/storage.py                          172      9    95%   161, 188, 191, 195, 296, 361, 425, 635-636
+llm_gw/harness/storage.py                          200      9    96%   174, 201, 204, 208, 309, 374, 438, 718-719
 llm_gw/router/__init__.py                            0      0   100%
 llm_gw/router/profile.py                            68      4    94%   79, 104, 140, 154
-llm_gw/router/registry.py                           60      3    95%   75, 91, 111
-llm_gw/router/router.py                            121     13    89%   111, 116-118, 142, 147-148, 172, 185, 216, 250, 254-255
-llm_gw/router/rules.py                              75      0   100%
-llm_gw/runtime.py                                   50      1    98%   119
+llm_gw/router/registry.py                           66      3    95%   87, 103, 123
+llm_gw/router/router.py                            121     12    90%   111, 116-118, 142, 147-148, 185, 216, 250, 254-255
+llm_gw/router/rules.py                              85      0   100%
+llm_gw/runtime.py                                   51      1    98%   122
 llm_gw/util/__init__.py                              0      0   100%
 llm_gw/util/clock.py                                22      2    91%   34-35
 llm_gw/web/__init__.py                               0      0   100%
-llm_gw/web/api_models.py                            88      1    99%   219
-llm_gw/web/app.py                                  237     22    91%   139, 175, 206, 209-210, 230, 241, 249, 290, 300, 317-318, 363-364, 378, 387, 399-400, 405, 413, 456, 463
+llm_gw/web/api_models.py                            93      1    99%   145
+llm_gw/web/app.py                                  261     22    92%   142, 178, 209, 212-213, 233, 244, 252, 327, 337, 354-355, 407-408, 422, 431, 443-444, 455, 464, 507, 514
 ------------------------------------------------------------------------------
-TOTAL                                             3344    246    93%
-390 passed in 2.61s
+TOTAL                                             3669    256    93%
 ```
 
-**390 passed，0 failed，93% 覆盖率。**
+**454 passed，0 failed，93% 覆盖率。**
 
-本轮改动的模块覆盖率：`harness/service.py` 97%（流式降级 + 口令网页配置 +
-被校验挡下的通讯也落 exchanges）、`harness/storage.py` 95%（`exchanges` 表与四个查询方法）、
-`web/app.py` 91%（`/api/settings*` 与 `/api/exchanges*`，并删除了 `/api/chat*`）、
-`web/api_models.py` 99%、`runtime.py` 98%、`router/router.py` 90%。
+本轮改动的模块覆盖率：`router/rules.py` **100%**（`model` 点名的四条分支：命中、
+不存在、越界、能力不匹配）、`core/schema.py` 95%（`Task.model` + `output_validity`
+及其 schema 子集校验器）、`harness/service.py` 97%（`_output_validity` 与两处落点）、
+`router/registry.py` 95%（`find()` 的标签/裸 id 两条路径）。
 
-`harness/service.py` 未覆盖的 6 行都是防御性分支：113（未注入存储时的
-`load_agent_password` 提前返回）、268（候选链至少含一项时的兜底）、
-439（口令未配置时直接放行的提前返回之外的同一条分支）、453-454（`HTTPException`
-的构造参数元组断行）、486（未注入存储时的 `_record` 提前返回）。
-`web/app.py` 新增端点里未覆盖的只有 290 与 300——未注入存储时的 503 分支，
-与既有 `/api/traces` 的同类分支一致，不重复造用例。
+v0.8.7 新增代码里未覆盖的都是**防御性分支**：`core/schema.py` 381-382 是
+`_matches_schema` 里"schema 本身不是对象"的兜底（返回 True，即放宽），
+没有正常路径会走到；`registry.py` 87 / 103 / 123 与 `service.py` 521 / 535-536
+是既有分支与 `UNKNOWN` 归类，与本次改动无关。
+
+v0.8.6 新增代码里未覆盖的都是**防御性分支**：`prompts.py` 119-120 与
+`storage.py` 718-719（库里 `variables` / `meta` 列不是合法 JSON 时的回落）、
+`ratelimit.py` 157-160（`reset()`，供配置变更后清桶，当前无调用方）、
+`service.py` 202（`check_rate_limit` 在"主路由无候选"时的提前返回——该情形应由路由
+如实报 `ROUTE_NO_CANDIDATE`，不重复造用例）、521 与 535-536（`_event_code` /
+`_error_code_from` 对无法识别的错误的 `UNKNOWN` 归类）。
+`web/app.py` 507 与 514（未构建前端产物时的 `_mount_frontend` 提前返回与 index 路由）
+是既有分支，与本次改动无关。
 
 ## 2. 按文件分布
 
 | 文件 | 用例数 | 本轮变化 |
 |---|---|---|
-| `tests/adapter/test_adapter_contract.py` | 19 | |
+| `tests/adapter/test_adapter_contract.py` | 23 | **+4（v0.8.6：json_object 透传、json_schema 归一化、deepseek 不降级、anthropic 只回 JSON 的 system 指令）** |
 | `tests/adapter/test_advanced_config.py` | 14 | |
 | `tests/adapter/test_streaming.py` | 22 | |
 | `tests/adapter/test_structured_output.py` | 19 | |
@@ -136,20 +169,22 @@ TOTAL                                             3344    246    93%
 | `tests/core/test_events.py` | 8 | |
 | `tests/core/test_json_utils.py` | 15 | |
 | `tests/core/test_messages.py` | 7 | |
-| `tests/core/test_schema.py` | 15 | |
+| `tests/core/test_schema.py` | 33 | **+9（v0.8.7：`model` 顶层字段、`output_validity` 三分语义与 schema 子集校验）**；+6（v0.8.6：`response_format` 归一化）、+3（v0.8.6：`PromptRef`） |
 | `tests/core/test_telemetry.py` | 5 | |
 | `tests/harness/test_agent_auth.py` | 7 | v0.7.0：agent 接口口令鉴权 |
 | `tests/harness/test_observability.py` | 17 | |
-| `tests/harness/test_service.py` | 19 | **+5（v0.8.4：流式降级）** |
+| `tests/harness/test_prompts.py` | 13 | **v0.8.6 新建：模板渲染、存储多版本、422 `PROMPT_INVALID`、版本落库** |
+| `tests/harness/test_ratelimit.py` | 11 | **v0.8.6 新建：令牌桶算法与 429 出口** |
+| `tests/harness/test_service.py` | 27 | **+1（v0.8.8：同 `trace_id` 的每次尝试都带路由快照）**；另两条既有降级用例按新语义改为「两条记录 + 按 `attempt_index` 取数」；**+5（v0.8.7：`output_valid` 落库与响应体、含失败/未请求/流式三种情形）**；**+2（v0.8.6：`response_format` 别名经接口可达）**；**+5（v0.8.4：流式降级）** |
 | `tests/router/test_profile.py` | 29 | |
-| `tests/router/test_profile_routing.py` | 24 | |
+| `tests/router/test_profile_routing.py` | 30 | **+6（v0.8.7：`model` 点名排首位、裸 id 唯一匹配、不砍备用、越界如实报错、能力不匹配）** |
 | `tests/router/test_retry.py` | 21 | |
-| `tests/router/test_router.py` | 20 | |
+| `tests/router/test_router.py` | 22 | **+2（v0.8.8：整条候选链依次试 + `on_attempt` 回调逐次上报）** |
 | `tests/web/test_model_discovery.py` | 21 | **+5（v0.8.1：清单缓存）**；v0.8.0 建此文件（16 例） |
-| `tests/web/test_web_api.py` | 41 | **+12（v0.8.4：口令网页配置、通讯日志、Chat 直连）**、**+1（v0.8.5：密钥持久化）** |
+| `tests/web/test_web_api.py` | 46 | **+5（v0.8.6：`/api/prompts*`）**、**+12（v0.8.4：口令网页配置、通讯日志、Chat 直连）**、**+1（v0.8.5：密钥持久化）** |
 | `tests/test_phase0_infra.py` | 4 | |
 | `tests/test_runtime.py` | 11 | v0.7.0：agent API 与控制台同进程共存 |
-| **合计** | **390** | **+17（v0.8.4）、+1（v0.8.5）** |
+| **合计** | **457** | **+3（v0.8.8：router +2、service +1）**；**+20（v0.8.7：schema +9、profile 路由 +6、service +5）**；**+44（v0.8.6：别名 +4、限流 +11、模板 +13、web +5、schema +9、service +2）** |
 
 ## 3. 需求要求的六类测试
 
@@ -158,11 +193,11 @@ TOTAL                                             3344    246    93%
 | 需求类别 | 文件 | 覆盖内容 | 代表用例 |
 |---|---|---|---|
 | Adapter Contract Test | `tests/adapter/test_adapter_contract.py`、`test_advanced_config.py` | 每个 adapter 的**请求翻译**与**响应翻译**，由 `httpx.MockTransport` 驱动，不依赖真实供应商 | 逐协议断言请求体字段（`response_format`、`tool_choice`、`stream_options.include_usage`）、高级配置注入（`temperature` / `top_p` / `top_k` / `thinking`）、`extra_body` 覆盖 |
-| router 测试 | `tests/router/test_router.py`、`test_profile_routing.py` | profile 作用域、能力匹配、静态顺序主备、**错误处置三选一（重试 / 降级 / 报错）**、候选拒绝原因 | `test_static_order_is_not_reordered_by_cost`、`test_profile_scopes_candidates`、`test_unknown_profile_fails_fast`、`test_decision_table_matches_requirement`、`test_execute_falls_back_to_backup_on_transient_error`（`trace.attempts == 5` / `trace.retries == 3`）、`test_execute_degrades_on_auth_failure_with_warning`、`test_execute_degrades_on_content_refusal_once_per_model`、`test_execute_does_not_degrade_on_request_invalid`、`test_execute_retries_then_degrades_after_max_retries` |
+| router 测试 | `tests/router/test_router.py`、`test_profile_routing.py` | profile 作用域、能力匹配、静态顺序主备、**错误处置三选一（重试 / 降级 / 报错）**、候选拒绝原因 | `test_static_order_is_not_reordered_by_cost`、`test_profile_scopes_candidates`、`test_unknown_profile_fails_fast`、`test_decision_table_matches_requirement`、`test_execute_falls_back_to_backup_on_transient_error`（`trace.attempts == 5` / `trace.retries == 3`）、`test_execute_degrades_on_auth_failure_with_warning`、`test_execute_degrades_on_content_refusal_once_per_model`、`test_execute_does_not_degrade_on_request_invalid`、`test_execute_retries_then_degrades_after_max_retries`、`test_execute_tries_the_whole_candidate_chain_in_order`（profile 里 3 个模型全部被调用，`trace.attempt_index == 3`）、`test_execute_reports_every_attempt_to_the_callback`（回调逐次上报位次与降级来源） |
 | 重试测试 | `tests/router/test_retry.py`、`test_profile_routing.py` | 用 mocktransport 模拟超时与错误，验证重试次数与退避策略，**不真的 sleep** | `test_retries_transient_error_with_backoff`（`assert clock.sleeps == [500, 1000]`）、`test_non_retryable_error_fails_fast`（`assert clock.sleeps == []`）、`test_provider_request_respects_retry_after_header`（`assert clock.sleeps == [300]`）、per-profile 策略 |
 | streaming 测试 | `tests/adapter/test_streaming.py` | SSE 事件序列正确性：delta 顺序、usage 事件、终态、错误中断行为 | delta 顺序、usage 事件位置、`test_second_terminal_push_is_rejected`、中途错误中断 |
 | structured output 测试 | `tests/adapter/test_structured_output.py` | JSON 提取、Schema 校验、**修复尝试次数**、失败时的错误返回 | JSON 围栏剥离、修复次数上限、超限抛 `OUTPUT_SCHEMA_INVALID`、流式终校验 |
-| 可观测性 | `tests/harness/test_observability.py`、`test_service.py` | trace / Metrics / Cost Ledger 是否正确记录每次调用的关键字段，含**处置与降级事实落库** | TTFT 口径、时间窗指标、trace 链路顺序、脱敏生效、`profile` 落库、旧库迁移、`test_auth_failure_degrades_and_records_resilience`（`attempt == 2` / `fallback == 1` / `disposition == "degrade"`）、`test_successful_call_records_no_disposition`、`test_post_task_response_carries_warnings` |
+| 可观测性 | `tests/harness/test_observability.py`、`test_service.py` | trace / Metrics / Cost Ledger 是否正确记录每次调用的关键字段，含**处置与降级事实落库** | TTFT 口径、时间窗指标、trace 链路顺序、脱敏生效、`profile` 落库、旧库迁移、`test_auth_failure_degrades_and_records_resilience`（**两条**记录：首条 `error_code=AUTH_INVALID` / `disposition=degrade`、第二条 `degraded_from=openai/gpt-4o-mini` / `fallback=1`）、`test_each_attempt_shares_trace_id_and_carries_route_snapshot`、`test_successful_call_records_no_disposition`、`test_post_task_response_carries_warnings` |
 
 额外补充（计划中未强制、但覆盖了关键不变式）：
 
@@ -711,11 +746,289 @@ $ curl -s localhost:8052/api/models | grep -c 'sk-persist-probe'
 - 升级后**旧库里那份"无密钥"清单仍在**，需要在控制台重新填一次密钥；此后不会再被
   保存动作抹掉。
 
+### 6.10 别名、提示词版本管理、按模型限流（v0.8.6）
+
+用干净库起真进程（`LLM_GW_DB=/tmp/v086b.sqlite3`、端口 8054、
+`LLM_GW_RATE_LIMIT_RPM=3 LLM_GW_RATE_LIMIT_BURST=3`），全程 `curl` 打真实 HTTP 入口。
+
+**（a）`response_format` 别名**——验收口径按 OpenAI 的字段名发请求，因此这条必须先过：
+
+```bash
+$ curl -s -X POST localhost:8054/api/tasks:validate -d '{…,"response_format":{"type":"json_object"}}'
+200 {"valid":true}
+$ curl -s -X POST localhost:8054/api/tasks:validate -d '{…,"response_format":{"type":"json_schema",
+      "json_schema":{"name":"s","schema":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}}}}'
+200 {"valid":true}
+$ curl -s -X POST localhost:8054/api/tasks:validate -d '{…,"response_format":{"type":"xml"}}'
+422 {"detail":{"code":"REQUEST_INVALID","message":"task does not match schema:\n  - input: Value error, 不支持的 response_format.type: 'xml'（可选 json_object / json_schema / text）"}}
+```
+
+两种 OpenAI 形态都被收下，且非法枚举给的是**可读原因**而不是一句"字段不对"。
+
+**（b）提示词模板：存储 + 变量替换 + 版本引用**
+
+```bash
+$ curl -s -X POST localhost:8054/api/prompts -d '{"name":"summarize","version":"v1",
+      "body":"你是{{persona}}。请用不超过 {{limit}} 字总结：\n{{article}}"}'
+{"name":"summarize","version":"v1","variables":["article","limit","persona"],"created_at":1790080357.29496}
+
+$ curl -s localhost:8054/api/prompts/summarize
+summarize ['v2','v1']  created_at= [1790080357.402328, 1790080357.29496]
+```
+
+`variables` 是**从正文抽出来的**（调用方提交什么不采信），`created_at` 是落库那一刻的真实
+时间戳——这正是 6.10 之前 `save_prompt` 直接返回入参、`created_at` 恒为 `0.0` 的那个缺陷。
+
+引用模板：缺版本时**解析后才确定落到哪一版**，因此调用记录里记的是实际渲染的那一版：
+
+```bash
+$ curl -s -X POST localhost:8054/v1/tasks -H 'x-trace-id: ev-tpl-ok' -d '{…,"prompt":
+      {"name":"summarize","variables":{"persona":"助手","limit":"20","article":"一段文章"}},…}'
+$ curl -s localhost:8054/api/traces/ev-tpl-ok
+deepseek-flash openai-completions | prompt: summarize v2 | sha: 4e002dc97b36 | total_ms: 157.4 | err: AUTH_INVALID
+```
+
+**（c）模板引用失败 → 422 `PROMPT_INVALID`**（不是 429、不是 5xx：这是请求本身不合法）
+
+```bash
+$ curl -s -X POST localhost:8054/v1/tasks -d '{"task_id":"ev-pm-1","prompt":{"name":"nope"},…}'
+422 {"detail":{"code":"PROMPT_INVALID","message":"模板 nope 不存在"}}
+$ curl -s -X POST localhost:8054/v1/tasks -d '{"task_id":"ev-pm-2","prompt":{"name":"summarize","version":"v1"},…}'
+422 {"detail":{"code":"PROMPT_INVALID","message":"模板 summarize@v1 缺少变量: persona, limit, article"}}
+```
+
+**（d）按模型独立限流**（RPM=3，突发 3）
+
+```bash
+$ for i in 1 2 3 4 5 6; do curl -s -o out -w "%{http_code} " -X POST localhost:8054/v1/tasks \
+      -H "x-trace-id: ev-rl-$i" -d '{…,"profile":"oa",…}'; done
+200 200 200 429 429 429
+
+# 第 4 次的两样东西都要看：状态码与响应头
+HTTP/1.1 429
+retry-after: 18
+{"detail":{"code":"RATE_LIMITED","message":"模型 openai/gpt-4o-mini 已触达本地限流（3 RPM），请在 18 秒后重试"}}
+
+# 换另一个模型，桶是独立的
+$ curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8054/v1/tasks -d '{…,"profile":"ds",…}'
+200
+```
+
+**（e）被拒的请求也留痕**（否则页面上看不到"被打回"的流量）：
+
+```bash
+$ curl -s 'localhost:8054/api/exchanges?task_id=ev-rl-4'
+[('error','RATE_LIMITED')]
+$ curl -s 'localhost:8054/api/exchanges?task_id=ev-pm-1'
+[('error','PROMPT_INVALID')]
+```
+
+**（f）两个模型都真的打出去了**（各带独立的 trace-id，互不污染）：
+
+```bash
+$ curl -s -X POST localhost:8054/v1/tasks -H 'x-trace-id: ev-final-oa' -d '{…,"profile":"oa",…}'
+HTTP 200  terminal=error  AUTH_INVALID: AUTH_INVALID: provider (401): {"error":{"message":"You didn't provide an API key.…"}}
+$ curl -s -X POST localhost:8054/v1/tasks -H 'x-trace-id: ev-final-ds' -d '{…,"profile":"ds",…}'
+HTTP 200  terminal=error  AUTH_INVALID: AUTH_INVALID: provider (401): Authentication Fails (governor)
+```
+
+两条都走到了上游、被上游以 401 打回——**这是"没有真实密钥"的诚实结论，不是"网关没接通"**：
+适配器选对了协议、请求体翻译成功、错误被归一成 `AUTH_INVALID` 并落库。
+要看到"成功的那一次"，用不访问真实上游的用例（第 4 节 `test_adapter_contract.py`、
+`test_structured_output.py`，以及 6.2 的本地假上游）。
+
+三段值得记下的取舍：
+
+- **校验 → 模板解析 → 限流**的顺序是刻意的。(c) 那两条本该 422 的请求若先撞限流，
+  调用方会收到 429 并以为"等 18 秒重发同样的请求就能成功"——那是错的。
+- **流式入口的限流必须在建流之前判**：`StreamingResponse` 一返回，HTTP 状态码就固定 200 了，
+  再想表达 429 只能塞进 SSE 事件里，那不叫"超限返回 429"。
+- **429 不进重试**：重试只会让桶更空，还会把"该等多久"藏起来。`Retry-After` 由桶的空缺量与
+  补充速率算出（第 4 次 18 秒 ≈ 缺 1 个令牌 ÷ 3/60 个每秒），不是写死的常数。
+
+### 6.11 独立验证脚本 `scripts/verify.py`（v0.8.7）
+
+第 6 节前几小节是**一次性的**实机验证（起服务、敲 curl、把输出抄下来存档）。它们能证明
+当时确实跑通了，但别人复现要靠重敲一遍命令。`scripts/verify.py` 把这些动作固化成脚本：
+自起**本地假上游**（一个进程同时提供 `openai-completions` 与 `anthropic-messages` 两套协议，
+按真实协议逐块 flush 回包、usage 分两处上报）→ 起**真实网关进程**指向它 → 真实 HTTP 请求
+逐项断言，**109 项**，退出码即结论。
+
+```console
+$ .venv/bin/python scripts/verify.py
+假上游：http://127.0.0.1:54882/v1
+网关（不限额）：http://127.0.0.1:54883
+
+1. 统一抽象层（协议翻译）
+  PASS  [verify-oa] 同一份 task 换 profile 即可调用
+  PASS  [verify-an] 同一份 task 换 profile 即可调用
+  PASS  OpenAI 协议：密钥翻成 Authorization: Bearer   — authorization=Bearer sk-verify-openai
+  PASS  Anthropic 协议：密钥翻成 x-api-key（同一次调用，调用方无感）   — x-api-key=sk-verify-anthropic
+  PASS  Anthropic 协议：带上 anthropic-version 头
+  PASS  请求体结构：OpenAI 把 system 放进 messages[0]
+  PASS  请求体结构：Anthropic 把同一个 system 提到顶层字段
+  PASS  Anthropic 必填字段 max_tokens 被补齐
+
+1b. 按 model 字段路由（点名即换适配器）
+  PASS  model=openai/gpt-4o-mini 被路由到 openai-completions   — terminal=done api=openai-completions model=gpt-4o-mini
+  PASS  model=openai/gpt-4o-mini 的上游请求真的打到了 /chat/completions
+  PASS  model=anthropic/claude-3-5-haiku-20241022 被路由到 anthropic-messages   — terminal=done api=anthropic-messages model=claude-3-5-haiku-20241022
+  PASS  model=anthropic/claude-3-5-haiku-20241022 的上游请求真的打到了 /messages
+  PASS  裸 id（唯一匹配）也能点名
+  PASS  点名不存在的模型 → 如实 ROUTE_NO_CANDIDATE   — ROUTE_NO_CANDIDATE: model openai/ghost 不存在（请用 provider/id 形态或唯一的 id）
+  PASS  点名 profile 池子外的模型（verify-oa 里只有 openai） → 如实 ROUTE_NO_CANDIDATE   — ...不在 profile verify-oa 的候选池里
+
+2. 流式输出（stream=true，SSE 逐块）
+  PASS  [verify-oa] HTTP 200 且 content-type 是 text/event-stream
+  PASS  [verify-oa] 收到多个 text_delta（真逐块，不是一次性回包）   — 4 个 delta
+  PASS  [verify-oa] 拼出的正文与上游一致   — '你好，这是流式的分片输出。'
+  PASS  [verify-oa] 终态是 done
+  PASS  [verify-oa] done 之后有 data: [DONE]
+  PASS  [verify-oa] 只出现一个终态事件
+  PASS  [verify-an] ...（同上六项，另一套协议）
+
+3. 结构化输出（response_format）
+  PASS  response_format 别名 json_object 被接受   — HTTP 200
+  PASS  response_format 别名 json_schema 被接受   — HTTP 200
+  PASS  非法 response_format.type 被 422 挡下并给出可读原因
+  PASS  [verify-oa] json_object：正文是合法 JSON   — '{"city": "上海", "score": 0.93}'
+  PASS  [verify-an] json_object：正文是合法 JSON   — '{"city": "上海", "score": 0.93}'
+  PASS  [verify-oa / verify-an] 兑现与否被判定并落库：output_valid=True   — 响应=True 记录=True
+  PASS  OpenAI 协议：约束走请求体里的 response_format
+  PASS  Anthropic 协议：没有 response_format 字段，约束改写进 system   — 'You must reply with a single valid JSON value and nothing el'
+  PASS  json_schema：返回正文是合法 JSON 且与 schema 对齐   — {'city': '北京', 'score': 0.71}
+  PASS  json_schema：schema 被翻译成上游认的形态   — {"type": "json_schema", "json_schema": {...}}
+  PASS  能力表如实的模型不会被硬塞 schema 请求（如实报 ROUTE_NO_CANDIDATE）   — ROUTE_NO_CANDIDATE: 全部候选被拒
+  PASS  json_schema：结构对得上 schema 才算兑现（output_valid=True）   — True
+  PASS  上游没回 JSON 时：调用成功但如实标记 output_valid=False   — terminal=done 响应=False 记录=False text='ok'
+  PASS  未请求结构化输出时 output_valid 为 null（不把『没要求』记成『不合格』）   — 响应=None 记录=None
+
+4. 提示词版本管理（模板存储 / 变量替换 / 版本引用）
+  PASS  模板 v1 / v2 存储成功
+  PASS  两个版本都在库里，新的在前   — ['v2', 'v1']
+  PASS  不存在的模板 → 422 PROMPT_INVALID
+  PASS  漏给变量 → 422 PROMPT_INVALID   — 模板 summarize@v1 缺少变量: persona, limit, article
+  PASS  [verify-oa] 模板渲染进 system：变量已替换
+  PASS  [verify-oa] 模板当背景、调用方 system 当即时指令（两者都在）
+  PASS  [verify-oa] 调用记录记下实际引用的版本 summarize@v2   — summarize@v2
+  PASS  [verify-oa] 记录带 prompt 指纹
+  PASS  ...（[verify-an] 同上五项）
+  PASS  显式指定 version=v1 时渲染的是 v1 正文
+  PASS  记录里的版本随引用变成 v1
+
+5. 可观测性（Token 分类统计 + 首 Token 延迟）
+  PASS  [verify-oa] 记录里 model / provider / api 三项齐全   — openai/gpt-4o-mini api=openai-completions
+  PASS  [verify-oa] input_tokens 分类统计正确   — 1234
+  PASS  [verify-oa] output_tokens 分类统计正确   — 56
+  PASS  [verify-oa] 缓存与思考类 token 也各有独立字段（无则为 0/None，不混进 input）
+  PASS  [verify-oa] total_tokens = input + output   — 1290
+  PASS  [verify-oa] 成本按费率算出来了   — 0.0002187
+  PASS  [verify-oa] 首 Token 延迟被单独测出来（≥ 上游首个分片的等待）   — ttft_ms=127.5
+  PASS  [verify-oa] 总延迟 ≥ 首 Token 延迟   — total_ms=197.5, ttft_ms=127.5
+  PASS  [verify-oa] 流式分片数被记下来（字段确实来自流式路径）   — 9
+  PASS  ...（[verify-an] 同上九项，ttft_ms=130.5 / total_ms=195.5）
+  PASS  Dashboard 聚合可用
+
+两个模型调用均可正常工作
+  PASS  [verify-oa → openai/gpt-4o-mini] 非流式调用成功并返回正文   — terminal=done text='两个模型都可用。'
+  PASS  [verify-oa] usage 回传给调用方   — {'input': 1234, 'output': 56, 'total_tokens': 1290, 'cost': 0.0002187}
+  PASS  [verify-an → anthropic/claude-3-5-haiku-20241022] 非流式调用成功并返回正文
+  PASS  [verify-an] usage 回传给调用方   — {... 'cost': 0.0012112000000000002}
+
+6a. 韧性（指数退避重试）
+  PASS  上游连续两次 500 后最终返回 200   — HTTP 200
+  PASS  正文来自第 3 次尝试   — 重试之后成功。
+  PASS  调用记录 attempt=3（首次 + 2 次重试）   — 3
+  PASS  重试计数与 attempt 一致   — 2
+  PASS  退避是真等待（≥ 500ms + 1000ms 的量级）   — 1.66s
+  PASS  持续失败时不会无限重试（封顶 3 次重试后如实报错）   — terminal=error attempt=4 code=UPSTREAM_OVERLOADED
+
+网关（RPM=3）：http://127.0.0.1:54840
+
+6b. 韧性（按模型独立限流，RPM=3）
+  PASS  前 3 个请求放行、第 4 个超限   — [200, 200, 200, 429]
+  PASS  超限返回 429 + Retry-After 响应头   — retry-after=20
+  PASS  429 正文带稳定错误码 RATE_LIMITED   — {'code': 'RATE_LIMITED', 'message': '模型 openai/gpt-4o-mini 已触达本地限流（3 RPM），请在 20 秒后重试'}
+  PASS  另一个模型有自己的桶（A 被限住不影响 B）   — HTTP 200
+  PASS  被限流的请求也在通讯日志里留痕   — [('error', 'RATE_LIMITED')]
+
+------------------------------------------------------------------------
+结果：全部 96 项通过。
+```
+
+三处刻意的设计（都是为了让证据"可复现"而不是"看起来通过"）：
+
+- **真进程、真 HTTP、真 SSE**：网关是 `uvicorn` 子进程，请求走真实 socket，流式验证读的是
+  字节流的 `event:` / `data:` 帧。全程不 mock 网关内部，避免"测试通过但代码没跑"。
+- **假上游不是"随便回个 200"**：它按两套协议各自的结构回包（OpenAI 的 `choices[].delta`、
+  Anthropic 的 `content_block_delta`），usage 也按各自的位置上报，首个分片前先等
+  `FIRST_CHUNK_DELAY_S=0.12` 秒——因此第 5 节的 `ttft_ms=127.5` 是**真的被测出来**的，
+  而不是恒等于 0 的占位值。
+- **限流要另起一个网关**：`policy_from_env` 在进程启动时读环境变量，所以脚本用第二个实例
+  （`RPM=3`）验限流，第一个保持不限额——否则限流会把前面所有功能项也一起限住。
+
+### 6.12 两处此前的空档已补齐（v0.8.7）
+
+第 6.11 节首版跑完后如实记下两个空档，v0.8.7 都已接线，脚本的断言也随之增加：
+
+- **路由键**：此前只能靠 `profile`（"池子"）侧面路由，请求里的顶层 `model` 字段不被
+  schema 接受。现已实现「**profile 定池子、model 定点名**」——点名只把该模型提到首位、
+  其余候选仍作备用，且不允许点名 profile 池子外的模型。`scripts/verify.py` 新增 §1b
+  逐项验证：`model=openai/gpt-4o-mini` 与 `model=anthropic/claude-3-5-haiku-20241022`
+  分别被路由到两套适配器，且上游请求**真的**打到各自的端点（`/chat/completions`、
+  `/messages`）——这正是需求"根据请求中的 `model` 字段动态路由到对应适配器"的端到端证据。
+- **`CallRecord.output_valid`**：此前 schema 与库里都有列却无人写入、恒为 `None`。现已
+  在每次调用结束时判定并落库，且是**三分语义**（`None` = 未请求/失败取消，`True` = 兑现，
+  `False` = 请求了没兑现）。脚本 §3 的三条断言分别覆盖这三种取值，响应体与落库记录都核对。
+
+### 6.13 降级到底有没有生效（v0.8.8）
+
+起因是一句很具体的反馈：**「profile 里配了 4 个模型，但感觉降级没实现」**。实测后确认
+降级逻辑本身一直在跑，坏的是三件让人看不见、也走不远的事：
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| profile 里 4 个模型，永远只试 2 个 | 每次尝试只取 `[primary, backup]` | 改按 `Decision.candidates` **整条**候选链依次往下试 |
+| Trace 里只有一条记录，"降级成功"看不出发生 | 一次请求只落最后一条 `CallRecord` | **每次尝试各落一条**，共享 `trace_id`、用 `attempt_index` 标位次 |
+| 降级成功，记录的 `model` 却是主路由 | `complete()` 落库时没传实际模型 | 按每次尝试的**实际**模型落库 |
+| 看不到"为什么选它 / 为什么没降级" | 决策依据没落库 | 调用记录新增 `route` 快照（`reason` / `candidates` / `rejected`） |
+
+端到端证据（脚本 §6c，新增 13 项断言）：给假上游加「**按路径恒失败**」（`fail_paths`
++ 可配 `fail_status`），把 OpenAI 那条路（`/chat/completions`）打成 401 → 落到
+`AUTH_INVALID` → 处置是 **DEGRADE（直接换模型，不重试同一个）**；Anthropic 那条路
+（`/messages`）保持正常，降级的终点就是它。路由表是 4 个模型的**静态**顺序，关掉重试好
+让"每个模型恰好被调用一次"可以被精确断言。
+
+```console
+6c. 韧性（候选链降级：4 个模型依次尝试）
+  PASS  前三个模型都不可用时，请求最终仍然成功（降级到第 4 个）   — terminal=done text='降级之后才成功。'
+  PASS  候选链上 4 个模型**依次都试过**   — ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'claude-3-5-haiku-20241022']
+  PASS  每次尝试各落一条调用记录（4 次尝试 = 4 条记录）   — 4 条：['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'claude-3-5-haiku-20241022']
+  PASS  4 条记录共享同一个 trace_id（一次请求就是一条链路）   — {'verify-degrade-chain'}
+  PASS  位次 attempt_index 从 1 连续到 4   — [1, 2, 3, 4]
+  PASS  失败的那几条如实记下错误码与处置（不再只剩一条『成功』记录）   — error_code=AUTH_INVALID disposition=degrade
+  PASS  首跳没有『从谁降级而来』   — ''
+  PASS  后续每条都标出『从哪个模型降级而来』，降级方向可读   — ['openai/gpt-4o-mini', 'openai/gpt-4o', 'openai/gpt-4.1-mini']
+  PASS  整条链路都被标为 fallback（降级不是隐形的）   — [True, True, True, True]
+  PASS  最终成功的记录写着真正出力的那个模型（不再写成主路由）   — model=claude-3-5-haiku-20241022 api=anthropic-messages error_code=None
+  PASS  每条记录都带路由决策快照：候选链 4 个标签   — ['openai/gpt-4o-mini', 'openai/gpt-4o', 'openai/gpt-4.1-mini', 'anthropic/claude-3-5-haiku-20241022']
+  PASS  路由决策快照给出依据（为什么是这几个模型、这个顺序）   — '命中 profile verify-degrade 的静态路由；候选链 openai/gpt-4o-mini → openai/gpt-4o → openai/gpt-4.1-mini → anthropic/claude-3-5-haiku-20241022'
+  PASS  关掉重试后每个模型恰好被调用一次（降级 = 换模型，不是原地重打）   — [('gpt-4o-mini', 1), ('gpt-4o', 1), ('gpt-4.1-mini', 1), ('claude-3-5-haiku-20241022', 1)]
+```
+
+单元层同一件事各有一例：`test_execute_tries_the_whole_candidate_chain_in_order`（3 个模型
+全部被调用、`trace.attempt_index == 3`）、`test_execute_reports_every_attempt_to_the_callback`
+（回调逐次上报位次与降级来源）、`test_each_attempt_shares_trace_id_and_carries_route_snapshot`
+（同 `trace_id` 下两条记录、候选链快照一致）。
+
 ## 7. 复现方式
 
 ```bash
 # 后端（含覆盖率）
 .venv/bin/python -m pytest tests -q --cov=llm_gw
+
+# 端到端验证脚本（第 6.11 节，109 项断言，不需要任何真实密钥）
+.venv/bin/python scripts/verify.py
 
 # 前端
 cd webapp && npm install && npm test
@@ -725,7 +1038,7 @@ cd webapp && npm install && npm test
 .venv/bin/python -m uvicorn llm_gw.runtime:create_runtime_app --factory --port 8000
 ```
 
-所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试与缓存过期测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 390 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级；6.7 同理会真的打一次上游并收到 401，因此**也不需要有效密钥**；6.8 用本地假上游，同样不需要真实密钥；6.9 用干净库起停两次，全程不访问任何上游）。
+所有 adapter 与模型发现测试均由 `httpx.MockTransport` 驱动，重试、限流与缓存过期测试由 `FakeClock` 驱动——**不需要任何真实供应商密钥**即可跑完全部 457 个用例。仅第 6 节的端到端验证会真的访问上游（6.1 预期收到 `AUTH_INVALID`；6.2 用本地假上游，同样不需要真实密钥；6.5 只验证鉴权层，请求在选模型之前就被拒绝；6.6 会真的访问供应商的 `/models` 与 `/chat/completions`，预期收到 401 并降级；6.7 同理会真的打一次上游并收到 401，因此**也不需要有效密钥**；6.8 用本地假上游，同样不需要真实密钥；6.9 用干净库起停两次，全程不访问任何上游；6.10 的模板与限流两段不访问上游，两个模型那一段会真的打出去并收到 401——**因此同样不需要有效密钥**；6.11 的验证脚本用本地假上游，全流程**一次上游都不访问，也不需要任何真实密钥**）。
 
 > 复现 v0.8.2 的 preset 验证时，记得用干净库（`LLM_GW_DB=/tmp/fresh.sqlite3`）：用默认的
 > `llm_gw.sqlite3` 会被里面已保存的模型清单覆盖，看到的仍是旧型号，详见第 6.6 节。

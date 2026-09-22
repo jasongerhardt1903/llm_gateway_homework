@@ -15,7 +15,7 @@
   Chat 页也不再经由控制台转发——它直接按 agent 的 schema 调 ``/v1/tasks:stream``
   （需求管理与交互层功能第 7 条）。
 
-版本：0.8.5
+版本：0.8.8
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from ..adapter import discovery
 from ..adapter.presets.registry import get_preset, provider_choices
 from ..core.messages import Model
 from ..core.schema import SchemaViolation, SyntaxViolation, validate_schema, validate_syntax
+from ..harness.prompts import PromptTemplate, extract_variables
 from ..harness.service import AGENT_PASSWORD_ENV, GatewayService
 from ..harness.storage import Storage
 from ..router.registry import CapabilityRegistry
@@ -42,6 +43,7 @@ from .api_models import (
     AgentPasswordPayload,
     ModelPayload,
     ProfilePayload,
+    PromptPayload,
     model_from_payload,
     model_to_payload,
     model_to_stored_payload,
@@ -278,6 +280,40 @@ def create_web_app(
             "env_key": AGENT_PASSWORD_ENV,
         }
 
+    # -- 提示词模板（需求"提示词版本管理"） --------------------------------
+
+    @app.get("/api/prompts")
+    async def list_prompts() -> list[dict]:
+        """全部模板版本（name 升序、版本新的在前）。"""
+        return [template.to_dict() for template in await _prompt_storage(storage).list_prompts()]
+
+    @app.post("/api/prompts")
+    async def create_prompt(payload: PromptPayload) -> dict:
+        """存一个模板版本；同一个 ``(name, version)`` 再存即覆盖。"""
+        template = PromptTemplate(
+            name=payload.name,
+            version=payload.version,
+            body=payload.body,
+            # 变量清单从正文抽，调用方提交的 variables 一律不采信。
+            variables=extract_variables(payload.body),
+        )
+        saved = await _prompt_storage(storage).save_prompt(template)
+        return saved.to_dict()
+
+    @app.get("/api/prompts/{name}")
+    async def list_prompt_versions(name: str) -> dict:
+        """某个 name 的全部版本；不存在则 404（而不是回一个空列表）。"""
+        versions = await _prompt_storage(storage).prompt_versions(name)
+        if not versions:
+            raise HTTPException(status_code=404, detail=f"模板 {name} 不存在")
+        return {"name": name, "versions": [template.to_dict() for template in versions]}
+
+    @app.delete("/api/prompts/{name}/{version}")
+    async def delete_prompt(name: str, version: str) -> dict:
+        if not await _prompt_storage(storage).delete_prompt(name, version):
+            raise HTTPException(status_code=404, detail=f"模板 {name}@{version} 不存在")
+        return {"deleted": f"{name}@{version}"}
+
     # -- 通讯原始往来数据（需求 Harness 层功能第 3 条） ---------------------
 
     @app.get("/api/exchanges")
@@ -349,6 +385,13 @@ def _remove_model(registry: CapabilityRegistry, label: str) -> bool:
     before = len(registry.models)
     registry.models = [model for model in registry.models if model.label() != label]
     return len(registry.models) != before
+
+
+def _prompt_storage(storage: Storage | None) -> Storage:
+    """提示词模板必须落在库上（模板的价值就在于重启后还在），未配存储即 503。"""
+    if storage is None:
+        raise HTTPException(status_code=503, detail="未配置存储，提示词模板不可用")
+    return storage
 
 
 @contextlib.asynccontextmanager
@@ -468,4 +511,8 @@ def _mount_frontend(app: FastAPI) -> None:
 
     @app.get("/")
     async def index() -> FileResponse:
-        return FileResponse(_WEBAPP_DIST / "index.html")
+        # ``index.html`` 必须每次都回源核对。它是唯一引用构建产物的文件，产物名带
+        # 内容哈希且每次构建都会换名、旧文件同时被删除——一旦浏览器拿着缓存的旧
+        # ``index.html``，它引用的 JS 已经 404，页面就整片空白（表现为"改了前端却
+        # 什么都没变"）。带哈希的 ``/assets/*`` 反过来可以放心长缓存。
+        return FileResponse(_WEBAPP_DIST / "index.html", headers={"cache-control": "no-cache"})

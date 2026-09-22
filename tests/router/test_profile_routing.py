@@ -42,13 +42,15 @@ def _model(
     )
 
 
-def _task(*, profile: str | None = None, **input_overrides):
+def _task(*, profile: str | None = None, model: str | None = None, **input_overrides):
     payload: dict = {
         "task_id": "t-1",
         "input": {"messages": [{"role": "user", "content": "hi"}], **input_overrides},
     }
     if profile is not None:
         payload["profile"] = profile
+    if model is not None:
+        payload["model"] = model
     return validate_schema(payload)
 
 
@@ -226,6 +228,74 @@ def test_capability_filtering_still_applies_inside_profile():
     decision = route(_task(profile="prod", tools=[{"name": "get_weather"}]), registry)
 
     assert decision.primary.label() == "openai/tools"
+
+
+# --------------------------------------------------------------------------
+# model 点名（需求"根据请求中的 model 字段动态路由到对应适配器"）
+# --------------------------------------------------------------------------
+
+
+def test_model_field_pins_that_model_as_primary():
+    """点名后它就是主路由——即便动态打分本来会选更便宜的另一个。"""
+    expensive, cheap = _model("expensive", cost_in=5.0), _model("cheap", cost_in=0.5)
+    registry = _registry(expensive, cheap)
+
+    decision = route(_task(model="openai/expensive"), registry)
+
+    assert decision.primary.label() == "openai/expensive"
+
+
+def test_model_field_accepts_bare_id_when_unique():
+    """裸 id 只有唯一匹配时才认，不然就得写全 ``provider/id``。"""
+    a = _model("a")
+    registry = _registry(a)
+
+    assert route(_task(model="a"), registry).primary is a
+
+
+def test_model_field_keeps_other_candidates_as_backup():
+    """点名只改顺序，不砍掉备用——"主备两个路由"的能力不该因为点名而消失。"""
+    a, b = _model("a"), _model("b")
+    registry = _registry(a, b)
+
+    decision = route(_task(model="openai/b"), registry)
+
+    assert decision.primary.label() == "openai/b"
+    assert decision.backup.label() == "openai/a"
+
+
+def test_model_field_cannot_escape_profile_scope():
+    """点了 profile 池子外的模型必须如实报错，而不是悄悄用它。
+
+    profile 的作用域是多租户/多环境隔离的依据，点名若能越界就等于架空它。
+    """
+    inside, outside = _model("inside"), _model("outside")
+    registry = _registry(inside, outside, profile=_profile("prod", ["openai/inside"]))
+
+    decision = route(_task(profile="prod", model="openai/outside"), registry)
+
+    assert decision.primary is None
+    assert "openai/outside" in decision.reason
+
+
+def test_unknown_model_field_reports_no_candidate():
+    registry = _registry(_model("a"))
+
+    decision = route(_task(model="openai/ghost"), registry)
+
+    assert decision.primary is None
+    assert "openai/ghost" in decision.reason
+
+
+def test_model_field_is_dropped_when_capability_mismatch():
+    """点名的模型能力不够时如实报错，而不是换一个模型顶上——调用方点名是有理由的。"""
+    plain = _model("plain")
+    registry = _registry(plain)
+
+    decision = route(_task(model="openai/plain", tools=[{"name": "get_weather"}]), registry)
+
+    assert decision.primary is None
+    assert "能力不匹配" in decision.reason
 
 
 # --------------------------------------------------------------------------

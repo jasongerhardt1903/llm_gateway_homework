@@ -62,6 +62,9 @@ _SCHEMA_INSTRUCTION = (
     "It must validate against this JSON Schema:\n"
 )
 
+#: 只要求"返回合法 JSON"、无结构约束时的 prompt 约束。
+_JSON_ONLY_INSTRUCTION = "You must reply with a single valid JSON value and nothing else."
+
 
 class AnthropicMessagesAdapter(Adapter):
     """把统一 task 翻译成 Anthropic Messages 请求，并把响应翻译回来。"""
@@ -152,6 +155,8 @@ class AnthropicMessagesAdapter(Adapter):
                 _SCHEMA_INSTRUCTION
                 + json.dumps(task.input.response_schema, ensure_ascii=False, sort_keys=True)
             )
+        elif task.input.response_mode() == "json_object":
+            parts.append(_JSON_ONLY_INSTRUCTION)
         return "\n\n".join(parts)
 
     def _messages(self, task: Task) -> list[dict[str, Any]]:
